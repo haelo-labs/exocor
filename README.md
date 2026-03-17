@@ -1,5 +1,7 @@
 # Exocor
 
+![VideoProject2-ezgif com-video-to-gif-converter (1)](https://github.com/user-attachments/assets/734b67b5-c2f2-4c73-999f-1bb871e78713)
+
 > **Control your app without touching it.**
 >
 > Voice, gaze, and gesture control for React apps.
