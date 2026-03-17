@@ -7,7 +7,7 @@
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "exocor": "./bin/exocor.js"
+    "exocor": "bin/exocor.js"
   },
   "files": [
     "dist",
@@ -46,10 +46,13 @@
   "homepage": "https://exocor.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/haelo-labs/exocor.git"
+    "url": "git+https://github.com/haelo-labs/exocor.git"
   },
   "bugs": {
     "url": "https://github.com/haelo-labs/exocor/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT",
   "engines": {
