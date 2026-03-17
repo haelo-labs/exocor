@@ -1,0 +1,255 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCapabilityMap } from '../core/CapabilityMap';
+import { createExocorResolverEndpoint } from '../server';
+import type { IntentPlan, IntentResolutionInput, IntentStep } from '../types';
+
+const {
+  resolveSpy,
+  resolveStreamSpy,
+  resolveForFailedStepSpy,
+  resolveForNewElementsSpy,
+  resolveFollowUpSpy
+} = vi.hoisted(() => ({
+  resolveSpy: vi.fn(),
+  resolveStreamSpy: vi.fn(),
+  resolveForFailedStepSpy: vi.fn(),
+  resolveForNewElementsSpy: vi.fn(),
+  resolveFollowUpSpy: vi.fn()
+}));
+
+vi.mock('../core/IntentResolver', () => ({
+  IntentResolver: class {
+    async resolve(input: IntentResolutionInput) {
+      return resolveSpy(input);
+    }
+
+    async resolveWithContextStreamInternal(
+      input: IntentResolutionInput,
+      runtimeContext?: Record<string, unknown>,
+      callbacks?: {
+        onResolutionPriority?: (priority: 'app_map_only' | 'route_then_dom' | 'dom_only') => void;
+        onStep?: (step: IntentStep) => void;
+      }
+    ) {
+      return resolveStreamSpy(input, runtimeContext, callbacks);
+    }
+
+    async resolveForFailedStep(
+      input: IntentResolutionInput,
+      failedStep: IntentStep,
+      failureReason: string
+    ) {
+      return resolveForFailedStepSpy(input, failedStep, failureReason);
+    }
+
+    async resolveForNewElements(
+      input: IntentResolutionInput,
+      newElements: IntentResolutionInput['map']['elements'],
+      completedSteps: IntentStep[]
+    ) {
+      return resolveForNewElementsSpy(input, newElements, completedSteps);
+    }
+
+    async resolveFollowUp(input: IntentResolutionInput, completedSteps: IntentStep[], instruction: string) {
+      return resolveFollowUpSpy(input, completedSteps, instruction);
+    }
+  }
+}));
+
+function buildResolutionInput(): IntentResolutionInput {
+  return {
+    command: 'open tickets',
+    inputMethod: 'text',
+    map: createCapabilityMap({
+      elements: [],
+      routes: ['/tickets'],
+      currentRoute: '/',
+      currentUrl: 'http://localhost/',
+      routeParams: {},
+      pageTitle: 'Home',
+      headings: [],
+      navigation: [],
+      formState: [],
+      buttonsState: [],
+      visibleErrors: [],
+      dialogs: [],
+      tableRows: [],
+      listItems: [],
+      cards: [],
+      statusBadges: [],
+      stateHints: [],
+      activeItems: [],
+      countBadges: []
+    }),
+    appMap: null,
+    gazeTarget: null,
+    gesture: 'none'
+  };
+}
+
+describe('createExocorResolverEndpoint', () => {
+  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+
+  beforeEach(() => {
+    resolveSpy.mockReset();
+    resolveStreamSpy.mockReset();
+    resolveForFailedStepSpy.mockReset();
+    resolveForNewElementsSpy.mockReset();
+    resolveFollowUpSpy.mockReset();
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  afterEach(() => {
+    if (originalApiKey) {
+      process.env.ANTHROPIC_API_KEY = originalApiKey;
+    } else {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it('rejects non-POST requests', async () => {
+    const handler = createExocorResolverEndpoint({ apiKey: 'server-key' });
+    const response = await handler(new Request('http://localhost/api/exocor/resolve', { method: 'GET' }));
+
+    expect(response.status).toBe(405);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'Method not allowed.'
+    });
+  });
+
+  it('rejects invalid resolver payloads', async () => {
+    const handler = createExocorResolverEndpoint({ apiKey: 'server-key' });
+    const response = await handler(
+      new Request('http://localhost/api/exocor/resolve', {
+        method: 'POST',
+        body: JSON.stringify({ nope: true })
+      })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'Invalid resolver request.'
+    });
+  });
+
+  it('fails closed when the server API key is missing', async () => {
+    const handler = createExocorResolverEndpoint();
+    const response = await handler(
+      new Request('http://localhost/api/exocor/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: 'resolve',
+          input: buildResolutionInput()
+        })
+      })
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'ANTHROPIC_API_KEY is not configured on the server.'
+    });
+  });
+
+  it('streams step and result events for initial planning', async () => {
+    const step: IntentStep = {
+      action: 'navigate',
+      target: '/tickets',
+      value: null,
+      waitForDOM: true,
+      reason: 'navigate to tickets'
+    };
+    const result = {
+      type: 'dom_steps' as const,
+      plan: {
+        source: 'claude',
+        rawCommand: 'open tickets',
+        confidence: 0.9,
+        steps: [step]
+      },
+      resolutionPriority: 'route_then_dom' as const
+    };
+
+    resolveStreamSpy.mockImplementationOnce(
+      async (
+        _input: IntentResolutionInput,
+        _runtimeContext?: Record<string, unknown>,
+        callbacks?: {
+          onResolutionPriority?: (priority: 'app_map_only' | 'route_then_dom' | 'dom_only') => void;
+          onStep?: (step: IntentStep) => void;
+        }
+      ) => {
+        callbacks?.onResolutionPriority?.('route_then_dom');
+        callbacks?.onStep?.(step);
+        return result;
+      }
+    );
+
+    const handler = createExocorResolverEndpoint({ apiKey: 'server-key' });
+    const response = await handler(
+      new Request('http://localhost/api/exocor/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: 'initial_stream',
+          input: buildResolutionInput(),
+          runtimeContext: { inputMethod: 'typed' }
+        })
+      })
+    );
+
+    expect(response.headers.get('Content-Type')).toContain('application/x-ndjson');
+    const lines = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    expect(lines[0]).toMatchObject({
+      type: 'step',
+      step,
+      resolutionPriority: 'route_then_dom'
+    });
+    expect(lines[1]).toMatchObject({
+      type: 'result',
+      result
+    });
+  });
+
+  it('returns JSON envelopes for non-stream resolver operations', async () => {
+    const plan: IntentPlan = {
+      source: 'claude',
+      rawCommand: 'open tickets',
+      confidence: 0.9,
+      steps: [
+        {
+          action: 'navigate',
+          target: '/tickets',
+          value: null,
+          waitForDOM: true,
+          reason: 'navigate to tickets'
+        }
+      ]
+    };
+    resolveSpy.mockResolvedValueOnce(plan);
+
+    const handler = createExocorResolverEndpoint({ apiKey: 'server-key' });
+    const response = await handler(
+      new Request('http://localhost/api/exocor/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: 'resolve',
+          input: buildResolutionInput()
+        })
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      data: {
+        plan
+      }
+    });
+  });
+});
