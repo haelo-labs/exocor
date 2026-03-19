@@ -9,6 +9,7 @@
 
 Exocor is a React SDK for multimodal app control.
 It runs inside your app, builds app-aware runtime context, sends planning requests to a secure backend resolver, and executes the resulting workflow against the live UI.
+It stays bootstrap-first, and can now also accept explicit app-native tools as a higher-confidence capability layer on top of discovery.
 
 ```tsx
 import { SpatialProvider } from 'exocor'
@@ -65,22 +66,29 @@ That means it can use in-app runtime context like:
 Today Exocor is intentionally **hybrid**:
 
 - it discovers app structure and runtime context from inside the app
-- it still uses the live DOM as the reliable execution layer
+- it can accept explicit app-native tools/capabilities from the provider
+- it still uses the live DOM as a reliable execution layer and fallback
 
 So the claim is not "zero DOM."
 The claim is "app-aware planning + in-app execution," instead of operating blind from outside the app.
+That planning context now combines:
+
+- a learned app model from app-map discovery, current route, live DOM/runtime context, and gaze/focus state
+- an explicit capability model from registered tools, parameter schema, route affinity, and safety metadata
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   U["User input<br/>voice / gaze / gesture / typed"] --> X["Exocor inside React app"]
-  X --> D["Local discovery<br/>DOM + route/runtime context + app map"]
+  X --> D["Learned app model<br/>DOM + route/runtime context + app map"]
+  X --> T["Explicit capability model<br/>registered tools + routes + safety + params"]
   D --> R["Resolver endpoint<br/>same-origin backend or local relay"]
+  T --> R
   R --> L["LLM planning"]
   L --> P["Workflow steps"]
   P --> E["Local executor"]
-  E --> A["Live app UI / DOM"]
+  E --> A["Live app UI / DOM or app-native tool handler"]
 ```
 
 ## How it works
@@ -90,18 +98,88 @@ On mount, Exocor:
 1. mounts its own SDK UI in an isolated shadow root
 2. scans the host app and builds a live capability map
 3. discovers and caches an app map of routes, buttons, tabs, filters, forms, and modal surfaces
-4. waits for a typed, voice, gaze-anchored, or gesture-driven command
-5. resolves the command into workflow steps
-6. executes those steps against the live app
-7. retries or replans if the UI changes or a target goes stale
+4. registers any explicit tools passed to `SpatialProvider`
+5. waits for a typed, voice, gaze-anchored, or gesture-driven command
+6. resolves the command into workflow steps using both the learned app model and any explicit tool metadata
+7. executes those steps against the live app or a trusted tool handler
+8. retries or replans if the UI changes or a target goes stale
 
 The runtime already supports:
 
 - deterministic instant actions for simple exact commands
+- deterministic exact-match shortcuts for certain explicit no-arg tools
 - streamed model-based planning for multi-step workflows
 - app-map-first planning where possible
 - DOM execution with retries and follow-up planning
 - voice clarification when a command is ambiguous
+
+## Explicit Tools Are Additive
+
+Explicit tools do not replace Exocor's bootstrap/discovery flow.
+They are an additional semantic layer on top of the current architecture.
+
+- Bootstrap and app-map discovery still run exactly as before.
+- Registered tools give the planner higher-confidence app-native actions when a tool is clearly the best fit.
+- If no tool fits, Exocor keeps using its current app-map and DOM-based planning/execution behavior.
+- Tools can be global or route-specific.
+- Route-specific tools stay visible to planning even when the current route is different.
+- When a route-specific tool is off-route, the planner can explicitly produce a plan like "navigate, then use the tool."
+
+Conceptually, trusted execution order is now:
+
+1. explicit tools
+2. learned app map and explicit locators
+3. DOM fallback
+
+## Registering Tools
+
+Provider-level registration is the v1 public surface:
+
+```tsx
+import { SpatialProvider, type ExocorToolDefinition } from 'exocor'
+
+const tools: ExocorToolDefinition[] = [
+  {
+    id: 'refreshDashboard',
+    description: 'Refresh dashboard',
+    safety: 'read',
+    handler: async () => {
+      await refreshDashboard()
+    }
+  },
+  {
+    id: 'createTicket',
+    description: 'Create ticket',
+    routes: ['/tickets'],
+    safety: 'write',
+    parameters: [
+      {
+        name: 'title',
+        description: 'Ticket title',
+        type: 'string',
+        required: true
+      }
+    ],
+    handler: async ({ title }) => {
+      await createTicket({ title: String(title) })
+    }
+  }
+]
+
+export default function App() {
+  return (
+    <SpatialProvider tools={tools}>
+      <YourApp />
+    </SpatialProvider>
+  )
+}
+```
+
+In that example:
+
+- `refreshDashboard` is global, so the planner can use it from anywhere.
+- `createTicket` belongs to `/tickets`, but the planner still knows it exists even if the user is currently elsewhere.
+- If the user is on `/dashboard`, Exocor can plan `navigate` to `/tickets` and then a `tool` step for `createTicket`.
 
 ## What runs locally
 
@@ -127,11 +205,13 @@ Depending on the command, that context can include:
 - compressed app context
 - visible dialogs, form fields, button state, and on-screen UI structure
 - app-map summary or route structure
+- explicit capability metadata for all registered tools
 - focused element / selected text for typed commands
 - gaze target context for voice commands
 - completed steps, failed steps, or newly appeared elements for replanning
 
 Important: this is an **early hybrid runtime**, so visible UI state can be part of the model context today.
+For tools, Exocor sends planner-safe metadata only: tool ids, descriptions, parameter schema, safety, route affinity, and whether the current route matches or likely requires navigation first. Runtime handlers stay local.
 
 ## What does not get sent by default
 
@@ -212,7 +292,7 @@ Exocor is **v0.1.1** and still early.
 Today it is best described as:
 
 - a React-first SDK
-- a hybrid runtime, not a pure app-native action system yet
+- a hybrid runtime with a learned app model plus an additive explicit capability layer
 - low-config and inference-heavy by design
 - more production-ready for demos and internal experimentation than broad deployment
 
@@ -222,7 +302,7 @@ More complex ones use an LLM and may take a few seconds.
 The long-term direction is:
 
 - keep low-config discovery for bootstrap
-- add more explicit app-native capabilities, adapters, and actions for production reliability
+- keep expanding explicit app-native capabilities, adapters, and actions for production reliability without removing discovery
 
 ## Getting started
 

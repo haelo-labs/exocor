@@ -12,6 +12,7 @@ let speechStopSpy: ReturnType<typeof vi.fn>;
 let speechRestartSpy: ReturnType<typeof vi.fn>;
 let resolveSpy: ReturnType<typeof vi.fn>;
 let resolveStreamSpy: ReturnType<typeof vi.fn>;
+let resolveForFailedStepSpy: ReturnType<typeof vi.fn>;
 let resolveForNewElementsSpy: ReturnType<typeof vi.fn>;
 
 function buildPlan(command: string) {
@@ -200,8 +201,8 @@ vi.mock('../core/RemoteIntentResolver', () => ({
       return [];
     }
 
-    async resolveForFailedStep() {
-      return [];
+    async resolveForFailedStep(...args: any[]) {
+      return resolveForFailedStepSpy(...args);
     }
 
     async resolveForNewElements() {
@@ -413,6 +414,28 @@ function HostAmbiguousOpenMock(): JSX.Element {
         </div>
       ) : null}
       {currentPath === '/equipment' ? <div data-testid="equipment-route">Equipment Route</div> : null}
+    </div>
+  );
+}
+
+function HostToolRouteMock(): JSX.Element {
+  const [currentPath, setCurrentPath] = React.useState(() => window.location.pathname || '/');
+
+  React.useEffect(() => {
+    const onPopState = (): void => {
+      setCurrentPath(window.location.pathname || '/');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
+  return (
+    <div>
+      <div data-testid="tool-current-path">{currentPath}</div>
+      {currentPath === '/tickets' ? <div data-testid="tool-tickets-route">Tickets Route</div> : null}
+      {currentPath !== '/tickets' ? <div data-testid="tool-other-route">Other Route</div> : null}
     </div>
   );
 }
@@ -634,6 +657,32 @@ async function advance(ms: number): Promise<void> {
   });
 }
 
+async function advanceUntil(
+  assertion: () => void,
+  {
+    stepMs = 250,
+    attempts = 20
+  }: {
+    stepMs?: number;
+    attempts?: number;
+  } = {}
+): Promise<void> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await advance(stepMs);
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+}
+
 function mockRefreshMap(domMap: ReturnType<typeof createCapabilityMap>) {
   return vi.spyOn(DOMScannerModule.DOMScanner.prototype, 'refresh').mockImplementation(function (this: any) {
     this.onUpdate(domMap);
@@ -659,6 +708,7 @@ describe('SpatialProvider integration', () => {
       plan: buildPlan(input.command),
       resolutionPriority: 'dom_only'
     }));
+    resolveForFailedStepSpy = vi.fn(async () => []);
     resolveForNewElementsSpy = vi.fn(async () => []);
   });
 
@@ -1675,6 +1725,213 @@ describe('SpatialProvider integration', () => {
     expect(screen.getByTestId('current-path').textContent).toBe('/tickets');
     expect(screen.getByText(/Pump Failure - critical/i)).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'New Ticket Modal' })).toBeNull();
+  });
+
+  it('passes provider-level tools to the planner and executes resolver-returned global tool steps', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    const refreshHandler = vi.fn().mockResolvedValue(undefined);
+
+    resolveStreamSpy.mockImplementationOnce(async (input: { toolCapabilityMap?: any }) => {
+      expect(input.toolCapabilityMap?.tools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'refreshDashboard',
+            isGlobal: true,
+            currentRouteMatches: true,
+            requiresNavigation: false,
+            safety: 'read'
+          })
+        ])
+      );
+
+      return {
+        type: 'dom_steps',
+        plan: {
+          source: 'claude',
+          rawCommand: 'please refresh the dashboard',
+          confidence: 0.9,
+          steps: [
+            {
+              action: 'tool',
+              toolId: 'refreshDashboard',
+              args: {},
+              reason: 'use explicit app-native tool'
+            }
+          ]
+        },
+        resolutionPriority: 'app_map_only'
+      };
+    });
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'refreshDashboard',
+            description: 'Refresh dashboard',
+            safety: 'read',
+            handler: refreshHandler
+          }
+        ]}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('please refresh the dashboard');
+    await advance(1500);
+
+    expect(refreshHandler).toHaveBeenCalledWith({});
+    expect(resolveStreamSpy).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem(getScopedHistoryKey())).toContain('Used app-native tool: refreshDashboard');
+  });
+
+  it('keeps route-specific tools visible to planning across routes and executes navigate-then-tool plans', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    const createTicketHandler = vi.fn().mockResolvedValue(undefined);
+
+    resolveStreamSpy.mockImplementationOnce(async (input: { toolCapabilityMap?: any }) => {
+      expect(input.toolCapabilityMap?.tools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'createTicket',
+            isGlobal: false,
+            routes: ['/tickets'],
+            currentRouteMatches: false,
+            requiresNavigation: true
+          })
+        ])
+      );
+
+      return {
+        type: 'dom_steps',
+        plan: {
+          source: 'claude',
+          rawCommand: 'please create a ticket',
+          confidence: 0.9,
+          steps: [
+            {
+              action: 'navigate',
+              target: '/tickets',
+              value: null,
+              waitForDOM: true,
+              reason: 'navigate to tickets'
+            },
+            {
+              action: 'tool',
+              toolId: 'createTicket',
+              args: { title: 'Pump Failure' },
+              reason: 'use explicit app-native tool'
+            }
+          ]
+        },
+        resolutionPriority: 'app_map_only'
+      };
+    });
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'createTicket',
+            description: 'Create ticket',
+            routes: ['/tickets'],
+            parameters: [
+              {
+                name: 'title',
+                description: 'Ticket title',
+                type: 'string',
+                required: true
+              }
+            ],
+            handler: createTicketHandler
+          }
+        ]}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('please create a ticket');
+    await advanceUntil(() => {
+      expect(screen.getByTestId('tool-current-path').textContent).toBe('/tickets');
+      expect(createTicketHandler).toHaveBeenCalledWith({ title: 'Pump Failure' });
+    });
+
+    expect(resolveStreamSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('replans cleanly after a route-mismatched tool step', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    const createTicketHandler = vi.fn().mockResolvedValue(undefined);
+
+    resolveStreamSpy.mockResolvedValueOnce({
+      type: 'dom_steps',
+      plan: {
+        source: 'claude',
+        rawCommand: 'please create a ticket',
+        confidence: 0.9,
+        steps: [
+          {
+            action: 'tool',
+            toolId: 'createTicket',
+            args: { title: 'Pump Failure' },
+            reason: 'use explicit app-native tool'
+          }
+        ]
+      },
+      resolutionPriority: 'app_map_only'
+    });
+    resolveForFailedStepSpy.mockResolvedValueOnce([
+      {
+        action: 'navigate',
+        target: '/tickets',
+        value: null,
+        waitForDOM: true,
+        reason: 'navigate to tickets'
+      },
+      {
+        action: 'tool',
+        toolId: 'createTicket',
+        args: { title: 'Pump Failure' },
+        reason: 'use explicit app-native tool'
+      }
+    ]);
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'createTicket',
+            description: 'Create ticket',
+            routes: ['/tickets'],
+            parameters: [
+              {
+                name: 'title',
+                description: 'Ticket title',
+                type: 'string',
+                required: true
+              }
+            ],
+            handler: createTicketHandler
+          }
+        ]}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('please create a ticket');
+    for (let index = 0; index < 12; index += 1) {
+      await advance(250);
+    }
+
+    expect(resolveForFailedStepSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('tool-current-path').textContent).toBe('/tickets');
+    expect(createTicketHandler).toHaveBeenCalledWith({ title: 'Pump Failure' });
   });
 
   it('dispatches streamed steps before full plan generation completes', async () => {

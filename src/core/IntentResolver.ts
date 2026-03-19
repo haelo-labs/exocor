@@ -47,16 +47,24 @@ interface StreamResolveCallbacks {
 const CLAUDE_SYSTEM_PROMPT = `You are an intent resolver. Given app context and user intent return a JSON array of steps to complete the task fully. Be concise.
 App context: {compressed capability map with element IDs}
 Runtime state: {current route/url, open dialogs, visible form fields, visible buttons}
+Explicit tools: {registered global and route-specific app-native tools}
 User intent: {voice or typed command}
 Current page: {route}
 Gaze target: {element ID user is looking at or null}
 Return only valid JSON array:
 [
-{action: click|fill|navigate|wait|scroll, target: elementId or route, value: string or null, waitForDOM: boolean, reason: string}
+{action: click|fill|navigate|wait|scroll|tool, target: elementId or route, toolId: string, args: object, value: string or null, waitForDOM: boolean, reason: string}
 ]
 Rules:
 
 Use element IDs from context for targets
+Prefer a registered tool when the tool is clearly a better fit than DOM/app-map inference
+Never invent tool ids
+Only use declared tool parameter names
+Global tools can be used from any route
+Route-specific tools remain available even when current route differs; if currentRouteMatches is false and requiresNavigation is true, plan navigate first and then the tool
+Destructive tools should only be used for explicit destructive intent
+If no tool fits, continue with app-map and DOM planning
 Elements marked as fillable: input, textarea, select, contenteditable. Only use fill action on elements explicitly marked as fillable:true in the context. Never use fill action on buttons, divs without contenteditable, or links.
 Complete full workflow end to end
 Always complete the FULL workflow end to end. Never stop at an intermediate state like an open modal or dialog. If your intent is to CREATE something you must: find the create button, click it, wait for form, fill ALL required fields, and submit the form. Stopping at an open modal is not success. Submitting an empty form is not success. Complete the entire task.
@@ -186,7 +194,11 @@ function parseClarificationDecision(text: string): { needsClarification: boolean
 }
 
 function isAction(value: string): value is ResolverStepAction {
-  return value === 'click' || value === 'fill' || value === 'navigate' || value === 'wait' || value === 'scroll';
+  return value === 'click' || value === 'fill' || value === 'navigate' || value === 'wait' || value === 'scroll' || value === 'tool';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseStepEntry(entry: Record<string, unknown>): IntentStep | null {
@@ -197,19 +209,31 @@ function parseStepEntry(entry: Record<string, unknown>): IntentStep | null {
 
   const target = entry.target == null ? undefined : String(entry.target).trim();
   const value = entry.value == null ? null : String(entry.value);
+  const toolId = entry.toolId == null ? undefined : String(entry.toolId).trim();
+  const args = entry.args == null ? undefined : isRecord(entry.args) ? entry.args : null;
   const waitForDOM = Boolean(entry.waitForDOM);
   const reason = String(entry.reason || actionRaw);
   const msRaw = entry.ms;
   const ms = typeof msRaw === 'number' && Number.isFinite(msRaw) ? msRaw : undefined;
 
-  if (actionRaw !== 'wait' && !target) {
+  if (actionRaw === 'tool' && !toolId) {
+    return null;
+  }
+
+  if (actionRaw !== 'wait' && actionRaw !== 'tool' && !target) {
+    return null;
+  }
+
+  if (args === null) {
     return null;
   }
 
   return {
     action: actionRaw,
-    target,
+    target: actionRaw === 'tool' ? target || toolId : target,
     value,
+    ...(toolId ? { toolId } : {}),
+    ...(args ? { args } : {}),
     waitForDOM,
     ms,
     reason
@@ -239,6 +263,8 @@ function stepFingerprint(step: IntentStep): string {
   return [
     step.action,
     step.target || '',
+    step.toolId || '',
+    step.args ? JSON.stringify(step.args) : '',
     step.value || '',
     step.waitForDOM ? '1' : '0',
     step.reason || '',
@@ -397,6 +423,7 @@ interface RuntimeStateSnapshot {
 
 type ResolverPromptContext = Omit<CompressedCapabilityMap, 'selectorMap'> & {
   runtimeState: RuntimeStateSnapshot;
+  toolCapabilityMap?: IntentResolutionInput['toolCapabilityMap'];
 };
 
 function toNewElementContext(elements: DOMElementDescriptor[]): Array<{
@@ -461,6 +488,10 @@ export class IntentResolver {
     }
 
     return appMap.routes.length > 0;
+  }
+
+  private hasToolCapabilityContext(domContext: { toolCapabilityMap?: IntentResolutionInput['toolCapabilityMap'] }): boolean {
+    return Boolean(domContext.toolCapabilityMap?.tools?.length);
   }
 
   private toMatchTokens(value: string): string[] {
@@ -626,21 +657,24 @@ export class IntentResolver {
   private buildResolverContext(
     compressed: CompressedCapabilityMap,
     appMap: AppMap | null | undefined,
-    runtimeState: RuntimeStateSnapshot
+    runtimeState: RuntimeStateSnapshot,
+    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
   ): ResolverPromptContext {
     return {
       ...toClaudeContext({
         ...compressed,
         appMap: appMap || null
       }),
-      runtimeState
+      runtimeState,
+      toolCapabilityMap: toolCapabilityMap || null
     };
   }
 
   private buildAppMapFirstContext(
     compressed: CompressedCapabilityMap,
     appMap: AppMap | null | undefined,
-    runtimeState: RuntimeStateSnapshot
+    runtimeState: RuntimeStateSnapshot,
+    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
   ): ResolverPromptContext {
     const context: ResolverPromptContext = {
       pageSummary: '',
@@ -653,6 +687,7 @@ export class IntentResolver {
       listSummary: '',
       appMap: appMap || null,
       runtimeState,
+      toolCapabilityMap: toolCapabilityMap || null,
       tokenEstimate: 0
     };
 
@@ -750,7 +785,7 @@ If needsClarification=false: question must be empty string.`;
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
     // eslint-disable-next-line no-console
     console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    const steps = await this.resolveWithClaude(command, compressed, runtimeState, input.appMap, null);
+    const steps = await this.resolveWithClaude(command, compressed, runtimeState, input.appMap, input.toolCapabilityMap, null);
 
     if (!steps.length) {
       return null;
@@ -780,7 +815,7 @@ If needsClarification=false: question must be empty string.`;
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
     // eslint-disable-next-line no-console
     console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    return this.resolveWithClaude(command, compressed, runtimeState, input.appMap, {
+    return this.resolveWithClaude(command, compressed, runtimeState, input.appMap, input.toolCapabilityMap, {
       failedStep,
       failureReason
     });
@@ -802,7 +837,7 @@ If needsClarification=false: question must be empty string.`;
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
     // eslint-disable-next-line no-console
     console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState);
+    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
     const newElementsContext = toNewElementContext(newElements);
 
     const userPrompt = [
@@ -835,7 +870,7 @@ If needsClarification=false: question must be empty string.`;
     // eslint-disable-next-line no-console
     console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
 
-    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState);
+    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
     const completedStepLabels = completedSteps.map((step) => step.reason || `${step.action} ${step.target || ''}`);
 
     const userPrompt = [
@@ -868,14 +903,19 @@ If needsClarification=false: question must be empty string.`;
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = summarizeAppMapForResolver(input.appMap, compressed.currentRoute, 800);
     const fullAppMap = input.appMap || null;
-    const liveDomContextForClaude = this.buildResolverContext(compressed, fullAppMap, runtimeState);
+    const liveDomContextForClaude = this.buildResolverContext(
+      compressed,
+      fullAppMap,
+      runtimeState,
+      input.toolCapabilityMap
+    );
     const priorityDecision = this.classifyResolutionPriority(command, appMapSummary);
     callbacks.onResolutionPriority?.(priorityDecision.priority);
 
     const contextForClaude =
       priorityDecision.priority === 'dom_only'
         ? liveDomContextForClaude
-        : this.buildAppMapFirstContext(compressed, fullAppMap, runtimeState);
+        : this.buildAppMapFirstContext(compressed, fullAppMap, runtimeState, input.toolCapabilityMap);
     const contextInputMethod = input.inputMethod === 'text' ? 'typed' : input.inputMethod;
     const alreadyClarified = command.includes('|||clarified|||');
     if (
@@ -883,7 +923,8 @@ If needsClarification=false: question must be empty string.`;
       contextInputMethod === 'typed' &&
       !isNavigationCommand(command) &&
       !this.hasTypedAnchor(runtimeContext) &&
-      !this.hasAppMapContext(contextForClaude)
+      !this.hasAppMapContext(contextForClaude) &&
+      !this.hasToolCapabilityContext(contextForClaude)
     ) {
       const clarificationQuestion = await this.maybeAskForTypedClarification(command, runtimeContext, contextForClaude);
       if (clarificationQuestion) {
@@ -899,24 +940,37 @@ Never show your reasoning. Never show multiple versions.
 Never use element IDs as targets. Never use CSS selectors as targets.
 For click/fill/submit/scroll actions, target MUST be an app-map label string.
 Only navigate actions may target route paths (e.g. "/tickets").
+Tool actions must use toolId and args.
 
 You are an intelligent assistant embedded in a web application. Understand the user's goal and complete it fully in one plan.
 
 You have:
 - appMap: complete app structure — all routes, buttons, tabs, modals, and form fields discovered in advance
+- toolCapabilityMap: explicit app-native tools, including global tools and route-specific tools across the whole app
 - runtimeState: current route/url + currently open dialogs + visible form fields + visible buttons
 - runtimeContext: SDK-derived metadata such as input method, gaze target/position, focused element, and selected text
 - Runtime executor: resolves label targets to live DOM elements at execution time
 - Input method: how the user gave the command
 
-You respond with either a JSON array of DOM steps or a clarification question:
-[{"action":"click|fill|navigate|wait|scroll","target":"label or route path","value":"string|null","waitForDOM":true|false,"reason":"string"}]
+You respond with either a JSON array of steps or a clarification question:
+[{"action":"click|fill|navigate|wait|scroll|tool","target":"label or route path","toolId":"registeredToolId","args":{"declared":"value"},"value":"string|null","waitForDOM":true|false,"reason":"string"}]
 
 HOW TO USE appMap:
 - appMap tells you what exists on each page: routes, buttons, tabs, modals, and form fields with their labels
 - Use appMap labels directly as action targets
 - Plan across page navigations using labels on destination pages
 - Example: navigate "/tickets" → click "New Ticket" → fill "title" → click "Create"
+
+HOW TO USE toolCapabilityMap:
+- Prefer a registered tool when the tool is clearly a better fit than pure DOM or app-map inference
+- Never invent tool ids
+- Never invent argument names
+- Only use declared parameter names
+- Global tools can be used from any route
+- Route-specific tools remain available even when the current route is different
+- If a route-specific tool has currentRouteMatches=false and requiresNavigation=true, it is valid and expected to plan navigate first and then the tool
+- If no tool is appropriate, continue with app-map and DOM planning
+- Destructive tools should only be used for explicit destructive intent
 
 NAVIGATION:
 - Plan the full workflow upfront using appMap knowledge
@@ -1020,6 +1074,7 @@ Complete the full task end to end. Never stop halfway.`;
     compressedMap: CompressedCapabilityMap,
     runtimeState: RuntimeStateSnapshot,
     appMap: AppMap | null | undefined,
+    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap'],
     failureContext: { failedStep: IntentStep; failureReason: string } | null
   ): Promise<IntentStep[]> {
     if (!this.client) {
@@ -1030,7 +1085,7 @@ Complete the full task end to end. Never stop halfway.`;
       return [];
     }
 
-    const contextForClaude = this.buildResolverContext(compressedMap, appMap, runtimeState);
+    const contextForClaude = this.buildResolverContext(compressedMap, appMap, runtimeState, toolCapabilityMap);
 
     const userPrompt = failureContext
       ? [

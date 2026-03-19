@@ -216,4 +216,41 @@ describe('DeterministicIntentResolver', () => {
       expect(resolved).toBeNull();
     }
   });
+
+  it('keeps existing DOM deterministic matching unchanged when tool metadata is present', () => {
+    const resolver = new DeterministicIntentResolver();
+    const map = mapFrom(
+      [descriptor({ id: 'e7', selector: '#activity-tab', label: 'Activity', text: 'Activity', role: 'tab' })],
+      '/workspace'
+    );
+
+    const resolved = resolver.resolve({
+      command: 'select activity',
+      inputMethod: 'text',
+      map,
+      appMap: null,
+      toolCapabilityMap: {
+        currentRoute: '/workspace',
+        tools: [
+          {
+            id: 'createTicket',
+            description: 'Create ticket',
+            parameters: [],
+            routes: ['/tickets'],
+            safety: 'write',
+            isGlobal: false,
+            currentRouteMatches: false,
+            requiresNavigation: true
+          }
+        ]
+      },
+      gazeTarget: null,
+      gesture: 'none'
+    });
+
+    expect(resolved?.plan.steps[0]).toMatchObject({
+      action: 'click',
+      target: 'e7'
+    });
+  });
 });

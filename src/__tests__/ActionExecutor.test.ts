@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionExecutor } from '../core/ActionExecutor';
 import { createCapabilityMap } from '../core/CapabilityMap';
+import { createToolRegistry } from '../core/ToolRegistry';
 import type { AppMap, DOMCapabilityMap, DOMElementDescriptor, IntentStep } from '../types';
 
 function descriptor(overrides: Partial<DOMElementDescriptor>): DOMElementDescriptor {
@@ -558,6 +559,139 @@ describe('ActionExecutor label target resolution', () => {
     expect(result.executed).toBe(true);
     expect(result.successDescription).toContain('submit-like completion action executed');
     expect(clicks).toBe(1);
+  });
+
+  it('executes registered tool steps with validated args and trusted completion', async () => {
+    const handler = vi.fn().mockResolvedValue({ ok: true });
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        routes: ['/tickets'],
+        parameters: [
+          {
+            name: 'title',
+            description: 'Ticket title',
+            type: 'string',
+            required: true
+          }
+        ],
+        handler
+      }
+    ]);
+
+    const executor = new ActionExecutor();
+    const result = await executor.executeSequence(
+      [
+        {
+          action: 'tool',
+          toolId: 'createTicket',
+          args: { title: 'Pump Failure' },
+          reason: 'use explicit app-native tool'
+        }
+      ],
+      mapFrom([], '/tickets', ['/tickets']),
+      {
+        toolRegistry: registry,
+        originalIntent: 'create ticket'
+      }
+    );
+
+    expect(handler).toHaveBeenCalledWith({ title: 'Pump Failure' });
+    expect(result.executed).toBe(true);
+    expect(result.successDescription).toContain('trusted app-native tool executed');
+  });
+
+  it('fails tool execution on explicit route mismatch', async () => {
+    const handler = vi.fn();
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        routes: ['/tickets'],
+        handler
+      }
+    ]);
+
+    const executor = new ActionExecutor();
+    const result = await executor.executeSequence(
+      [
+        {
+          action: 'tool',
+          toolId: 'createTicket',
+          args: {},
+          reason: 'use explicit app-native tool'
+        }
+      ],
+      mapFrom([], '/dashboard', ['/dashboard', '/tickets']),
+      {
+        toolRegistry: registry,
+        originalIntent: 'create ticket'
+      }
+    );
+
+    expect(result.executed).toBe(false);
+    expect(result.failedStepReason).toContain('current route is /dashboard');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('fails tool execution when args are invalid or handler throws', async () => {
+    const handler = vi.fn().mockRejectedValue(new Error('backend unavailable'));
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        routes: ['/tickets'],
+        parameters: [
+          {
+            name: 'title',
+            description: 'Ticket title',
+            type: 'string',
+            required: true
+          }
+        ],
+        handler
+      }
+    ]);
+
+    const executor = new ActionExecutor();
+    const invalidArgsResult = await executor.executeSequence(
+      [
+        {
+          action: 'tool',
+          toolId: 'createTicket',
+          args: {},
+          reason: 'use explicit app-native tool'
+        }
+      ],
+      mapFrom([], '/tickets', ['/tickets']),
+      {
+        toolRegistry: registry,
+        originalIntent: 'create ticket'
+      }
+    );
+
+    expect(invalidArgsResult.executed).toBe(false);
+    expect(invalidArgsResult.failedStepReason).toContain('requires argument "title"');
+
+    const handlerFailureResult = await executor.executeSequence(
+      [
+        {
+          action: 'tool',
+          toolId: 'createTicket',
+          args: { title: 'Pump Failure' },
+          reason: 'use explicit app-native tool'
+        }
+      ],
+      mapFrom([], '/tickets', ['/tickets']),
+      {
+        toolRegistry: registry,
+        originalIntent: 'create ticket'
+      }
+    );
+
+    expect(handlerFailureResult.executed).toBe(false);
+    expect(handlerFailureResult.failedStepReason).toContain('Tool "createTicket" failed: backend unavailable');
   });
 
   it('preserves refresh-on-miss, waitForDOM refresh, and strict success in streamed execution', async () => {

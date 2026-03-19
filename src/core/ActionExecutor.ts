@@ -11,12 +11,15 @@ import type {
   SequenceExecutionResult
 } from '../types';
 import { isSdkUiElement, SDK_UI_SELECTOR } from './sdkUi';
+import type { ToolRegistry } from './ToolRegistry';
+import { normalizeToolRoutePath, toolMatchesCurrentRoute } from './ToolRegistry';
 
 interface ExecuteOptions {
   refreshMap?: () => DOMCapabilityMap;
   appMap?: AppMap | null;
   navigate?: (path: string) => boolean | Promise<boolean>;
   resolutionPriority?: ResolutionPriority;
+  toolRegistry?: ToolRegistry;
 }
 
 interface ExecuteSequenceOptions extends ExecuteOptions {
@@ -31,6 +34,7 @@ interface StepResult extends ExecutionResult {
   targetNotFound?: boolean;
   valueChanged?: boolean;
   submitLikeCompletionExecuted?: boolean;
+  trustedCompletionExecuted?: boolean;
   settleMode?: UiSettleMode;
 }
 
@@ -1553,10 +1557,18 @@ function evaluateStrictSuccess(
   after: DOMSnapshot,
   fillValueChanged: boolean,
   submitLikeCompletionExecuted: boolean,
+  trustedCompletionExecuted: boolean,
   lastCompletedStep: IntentStep | undefined
 ): { success: boolean; message: string } {
   const kind = inferIntentKind(command, steps);
   const incomplete = `Incomplete — stopped at ${lastCompletedStepLabel(lastCompletedStep)}. Try again or type the command.`;
+
+  if (trustedCompletionExecuted) {
+    return {
+      success: true,
+      message: 'trusted app-native tool executed'
+    };
+  }
 
   if (kind === 'create') {
     const newItemAppeared = hasNewListItems(before, after);
@@ -1703,6 +1715,7 @@ export class ActionExecutor {
     let completedSteps = 0;
     let fillValueChanged = false;
     let submitLikeCompletionExecuted = false;
+    let trustedCompletionExecuted = false;
     let lastCompletedStep: IntentStep | undefined;
     const consumedSteps: IntentStep[] = [];
     const effectivePriority: ResolutionPriority = options.resolutionPriority || 'dom_only';
@@ -1772,6 +1785,9 @@ export class ActionExecutor {
       if (execution.submitLikeCompletionExecuted) {
         submitLikeCompletionExecuted = true;
       }
+      if (execution.trustedCompletionExecuted) {
+        trustedCompletionExecuted = true;
+      }
 
       completedSteps += 1;
       lastCompletedStep = step;
@@ -1823,6 +1839,7 @@ export class ActionExecutor {
       afterSequence,
       fillValueChanged,
       submitLikeCompletionExecuted,
+      trustedCompletionExecuted,
       lastCompletedStep
     );
 
@@ -2062,6 +2079,46 @@ export class ActionExecutor {
             resolvedTargetLabel: resolvedTarget.resolvedTargetLabel || step.target || ''
           }),
           settleMode: 'mutation-required'
+        };
+      }
+      case 'tool': {
+        if (!options.toolRegistry) {
+          return { executed: false, reason: 'Tool registry unavailable.' };
+        }
+
+        const toolId = step.toolId || step.target || '';
+        const validation = options.toolRegistry.validateArgs(toolId, step.args);
+        if (!validation.ok) {
+          return {
+            executed: false,
+            reason: validation.reason
+          };
+        }
+
+        const currentRoute = normalizeToolRoutePath(map.currentRoute || window.location.pathname || '/');
+        if (!toolMatchesCurrentRoute(validation.tool, currentRoute)) {
+          return {
+            executed: false,
+            reason: `Tool "${validation.tool.id}" is scoped to ${validation.tool.routes.join(', ')} but current route is ${currentRoute}.`
+          };
+        }
+
+        try {
+          await validation.tool.handler(validation.args || {});
+        } catch (error) {
+          return {
+            executed: false,
+            reason:
+              error instanceof Error && error.message
+                ? `Tool "${validation.tool.id}" failed: ${error.message}`
+                : `Tool "${validation.tool.id}" failed.`
+          };
+        }
+
+        return {
+          executed: true,
+          trustedCompletionExecuted: true,
+          settleMode: 'quiet-only'
         };
       }
       default:

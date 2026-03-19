@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 export type Modality = 'voice' | 'gaze' | 'gesture';
 
 /** Supported primitive actions that can be executed against the host app. */
-export type IntentActionType = 'click' | 'navigate' | 'fill' | 'submit' | 'scroll';
+export type IntentActionType = 'click' | 'navigate' | 'fill' | 'submit' | 'scroll' | 'tool';
 /** Supported sequence step actions. */
 export type IntentStepAction = IntentActionType | 'wait';
 
@@ -13,6 +13,34 @@ export type IntentSource = 'claude' | 'deterministic' | 'manual';
 
 /** Input channel that submitted a command into the resolver pipeline. */
 export type CommandInputMethod = 'voice' | 'text' | 'gesture';
+
+/** Supported tool parameter primitive types. */
+export type ExocorToolParameterType = 'string' | 'number' | 'boolean' | 'enum';
+/** Safety hint surfaced to planning for registered app-native tools. */
+export type ExocorToolSafety = 'read' | 'write' | 'destructive';
+
+/** One declared parameter for an explicit app-native tool. */
+export interface ExocorToolParameter {
+  name: string;
+  description: string;
+  type?: ExocorToolParameterType;
+  required?: boolean;
+  options?: string[];
+}
+
+/** Public planner-safe metadata for an explicit app-native tool. */
+export interface ExocorToolMetadata {
+  id: string;
+  description: string;
+  parameters?: ExocorToolParameter[];
+  routes?: string[];
+  safety?: ExocorToolSafety;
+}
+
+/** Runtime tool definition registered with SpatialProvider. */
+export interface ExocorToolDefinition extends ExocorToolMetadata {
+  handler: (args: Record<string, unknown>) => unknown | Promise<unknown>;
+}
 
 /** Host tool definition that can be surfaced to higher-level SDK registries. */
 export interface AppTool {
@@ -156,6 +184,22 @@ export interface AppMapSummary {
   routes: AppMapRouteSummary[];
 }
 
+/** Route-aware planner-visible entry for an explicit tool. */
+export interface ToolCapabilityEntry extends ExocorToolMetadata {
+  parameters: ExocorToolParameter[];
+  routes: string[];
+  safety: ExocorToolSafety;
+  isGlobal: boolean;
+  currentRouteMatches: boolean;
+  requiresNavigation: boolean;
+}
+
+/** Explicit tool capability map sent alongside the learned app model. */
+export interface ToolCapabilityMap {
+  currentRoute: string;
+  tools: ToolCapabilityEntry[];
+}
+
 /** Compressed capability context sent to the resolver model. */
 export interface CompressedCapabilityMap {
   pageSummary: string;
@@ -241,6 +285,8 @@ export interface IntentAction {
   action: IntentActionType;
   target: string;
   value: string | null;
+  toolId?: string;
+  args?: Record<string, unknown> | null;
   confidence: number;
   source: IntentSource;
   rawCommand: string;
@@ -252,6 +298,8 @@ export interface IntentStep {
   /** element id (e.g. e12) or route path */
   target?: string;
   value?: string | null;
+  toolId?: string;
+  args?: Record<string, unknown> | null;
   waitForDOM?: boolean;
   reason: string;
   ms?: number;
@@ -299,6 +347,7 @@ export interface SpatialProviderProps {
   backendUrl?: string;
   modalities?: Modality[];
   debug?: boolean;
+  tools?: ExocorToolDefinition[];
   /** Called when a fresh app map is discovered or loaded from cache. */
   onAppMapped?: (appMap: AppMap) => void;
 }
@@ -309,6 +358,7 @@ export interface IntentResolutionInput {
   inputMethod: CommandInputMethod;
   map: DOMCapabilityMap;
   appMap?: AppMap | null;
+  toolCapabilityMap?: ToolCapabilityMap | null;
   gazeTarget: string | null;
   gesture: GestureState['gesture'];
   completedSteps?: IntentStep[];

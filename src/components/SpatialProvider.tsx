@@ -21,6 +21,7 @@ import {
 } from '../core/DOMScanner';
 import { DeterministicIntentResolver } from '../core/DeterministicIntentResolver';
 import { RemoteIntentResolver } from '../core/RemoteIntentResolver';
+import { createToolRegistry, normalizeToolRoutePath } from '../core/ToolRegistry';
 import {
   ChatPanel,
   type CommandHistoryItem,
@@ -57,6 +58,7 @@ import type {
 } from '../types';
 
 const DEFAULT_MODALITIES: Array<'voice' | 'gaze' | 'gesture'> = ['voice', 'gaze', 'gesture'];
+const EMPTY_TOOLS: NonNullable<SpatialProviderProps['tools']> = [];
 const SILENCE_TIMEOUT_MS = 1200;
 const APP_MAP_BOOTSTRAP_GRACE_MS = 0;
 const HISTORY_STORAGE_KEY = 'exocor.command-history.v1';
@@ -389,10 +391,13 @@ function stepToIntent(step: IntentStep, source: IntentAction['source'], rawComma
     return null;
   }
 
+  const toolId = step.toolId || step.target || '';
   return {
     action: step.action,
-    target: step.target || '',
+    target: step.target || toolId,
     value: step.value ?? null,
+    ...(toolId ? { toolId } : {}),
+    ...(step.args ? { args: step.args } : {}),
     confidence: 0.9,
     source,
     rawCommand
@@ -400,8 +405,28 @@ function stepToIntent(step: IntentStep, source: IntentAction['source'], rawComma
 }
 
 function formatProgress(step: IntentStep): string {
+  if (step.action === 'tool') {
+    const toolId = step.toolId || step.target || 'unknown-tool';
+    return `Used app-native tool: ${toolId}`;
+  }
   const reason = step.reason || step.action;
   return `${reason.charAt(0).toUpperCase()}${reason.slice(1)}...`;
+}
+
+function buildDirectToolPlan(command: string, toolId: string): IntentPlan {
+  return {
+    source: 'deterministic',
+    rawCommand: normalizeCommand(command),
+    confidence: 0.99,
+    steps: [
+      {
+        action: 'tool',
+        toolId,
+        args: {},
+        reason: 'use explicit app-native tool'
+      }
+    ]
+  };
 }
 
 function toHistoryInputMethod(inputMethod: CommandInputMethod): CommandHistoryInputMethod {
@@ -693,6 +718,7 @@ export function SpatialProvider({
   backendUrl,
   modalities = DEFAULT_MODALITIES,
   debug = Boolean(false),
+  tools,
   onAppMapped
 }: SpatialProviderProps): JSX.Element {
   const themeMode = useSdkThemeMode();
@@ -814,6 +840,7 @@ export function SpatialProvider({
       }),
     [backendUrl, debug]
   );
+  const toolRegistry = useMemo(() => createToolRegistry(tools || EMPTY_TOOLS), [tools]);
 
   useEffect(() => {
     resolverRef.current = resolver;
@@ -1253,17 +1280,49 @@ export function SpatialProvider({
         updateCommandHistoryEntry(historyEntryId, 'planning', 'Clarification received');
       }
 
+      const buildToolCapabilityMap = (map: DOMCapabilityMap) =>
+        toolRegistry.hasTools()
+          ? toolRegistry.buildCapabilityMap(normalizeToolRoutePath(map.currentRoute || window.location.pathname || '/'))
+          : null;
+
+      const buildResolutionInput = (
+        map: DOMCapabilityMap,
+        commandText: string,
+        completedSteps?: IntentStep[]
+      ) => ({
+        command: commandText,
+        inputMethod,
+        map,
+        appMap: availableAppMap,
+        toolCapabilityMap: buildToolCapabilityMap(map),
+        gazeTarget: commandGazeState.gazeTarget ?? null,
+        gesture: gestureRef.current.gesture || 'none',
+        ...(completedSteps ? { completedSteps } : {})
+      });
+
+      const toolShortcutMatch =
+        activePendingClarification || !toolRegistry.hasTools()
+          ? null
+          : toolRegistry.resolveDirectToolShortcut(
+              resolutionCommand,
+              normalizeToolRoutePath(resolutionMap.currentRoute || window.location.pathname || '/')
+            );
       const deterministicResolution =
         activePendingClarification || !deterministicResolverRef.current
           ? null
-          : deterministicResolverRef.current.resolve({
-              command: resolutionCommand,
-              inputMethod,
-              map: resolutionMap,
-              appMap: availableAppMap,
-              gazeTarget: commandGazeState.gazeTarget ?? null,
-              gesture: gestureRef.current.gesture
-            });
+          : toolShortcutMatch?.type === 'direct_execute'
+            ? {
+                plan: buildDirectToolPlan(resolutionCommand, toolShortcutMatch.tool.id),
+                resolutionPriority: 'app_map_only' as const
+              }
+            : toolShortcutMatch?.type === 'planner_only'
+              ? null
+              : deterministicResolverRef.current.resolve(
+                  buildResolutionInput(
+                    resolutionMap,
+                    resolutionCommand
+                  )
+                );
       if (!deterministicResolution && !resolverRef.current) {
         return false;
       }
@@ -1279,6 +1338,14 @@ export function SpatialProvider({
         setProgressMessage('Planning workflow...');
         showToast('planning', 'Planning workflow...');
         appendCommandHistoryTrace(historyEntryId, 'Planning workflow');
+        if (toolShortcutMatch?.type === 'planner_only') {
+          appendCommandHistoryTrace(
+            historyEntryId,
+            toolShortcutMatch.reason === 'route_mismatch'
+              ? `Matched route-scoped app-native tool: ${toolShortcutMatch.tool.id}; planner will navigate first`
+              : `Matched app-native tool: ${toolShortcutMatch.tool.id}; planner will supply arguments`
+          );
+        }
       }
 
       setDomMap(resolutionMap);
@@ -1309,10 +1376,14 @@ export function SpatialProvider({
       if (deterministicResolution) {
         resolvedPlan = deterministicResolution.plan;
         resolutionPriority = deterministicResolution.resolutionPriority;
-        appendCommandHistoryTrace(
-          historyEntryId,
-          `Matched deterministic instant action (${resolvedPlan.steps.length} step${resolvedPlan.steps.length === 1 ? '' : 's'})`
-        );
+        if (toolShortcutMatch?.type === 'direct_execute') {
+          appendCommandHistoryTrace(historyEntryId, `Matched app-native tool shortcut: ${toolShortcutMatch.tool.id}`);
+        } else {
+          appendCommandHistoryTrace(
+            historyEntryId,
+            `Matched deterministic instant action (${resolvedPlan.steps.length} step${resolvedPlan.steps.length === 1 ? '' : 's'})`
+          );
+        }
       }
       if (!resolvedPlan && resolverRef.current) {
         const useStreamExecution = inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution;
@@ -1340,6 +1411,7 @@ export function SpatialProvider({
             appMap: availableAppMap,
             navigate: navigateWithFiberDriver,
             resolutionPriority,
+            toolRegistry,
             onProgress: (_message, step) => {
               const stepMessage = formatProgress(step);
               setProgressMessage(stepMessage);
@@ -1365,14 +1437,7 @@ export function SpatialProvider({
           beginStreamingExecution();
         };
 
-        const streamResolutionInput = {
-          command: resolutionCommandForContext,
-          inputMethod,
-          map: resolutionMap,
-          appMap: availableAppMap,
-          gazeTarget: commandGazeState.gazeTarget ?? null,
-          gesture: gestureRef.current.gesture
-        };
+        const streamResolutionInput = buildResolutionInput(resolutionMap, resolutionCommandForContext);
         const resolvedIntent = await resolverRef.current.resolveWithContextStreamInternal(
           streamResolutionInput,
           enrichedContext,
@@ -1420,7 +1485,7 @@ export function SpatialProvider({
             baseCommand
           );
           const resolvedSteps = useStreamExecution && streamedSteps.length > 0 ? streamedSteps : sanitizedResolvedSteps;
-          appendCommandHistoryTrace(historyEntryId, `Planned ${resolvedSteps.length} DOM steps`);
+          appendCommandHistoryTrace(historyEntryId, `Planned ${resolvedSteps.length} step${resolvedSteps.length === 1 ? '' : 's'}`);
           resolutionPriority = resolvedIntent.resolutionPriority;
           resolvedPlan = {
             ...resolvedIntent.plan,
@@ -1435,14 +1500,7 @@ export function SpatialProvider({
       if (!resolvedPlan) {
         appendCommandHistoryTrace(historyEntryId, 'Falling back to DOM-only resolution');
         const fallbackMap = refreshMapForExecution();
-        const fallbackResolutionInput = {
-          command: resolutionCommand,
-          inputMethod,
-          map: fallbackMap,
-          appMap: availableAppMap,
-          gazeTarget: commandGazeState.gazeTarget ?? null,
-          gesture: gestureRef.current.gesture || 'none'
-        };
+        const fallbackResolutionInput = buildResolutionInput(fallbackMap, resolutionCommand);
         resolutionPriority = 'dom_only';
         resolvedPlan = await resolverRef.current!.resolve(fallbackResolutionInput);
         if (resolvedPlan) {
@@ -1493,6 +1551,7 @@ export function SpatialProvider({
           appMap: availableAppMap,
           navigate: navigateWithFiberDriver,
           resolutionPriority,
+          toolRegistry,
           onProgress: (_message: string, step: IntentStep) => {
             const stepMessage = formatProgress(step);
             setProgressMessage(stepMessage);
@@ -1551,6 +1610,7 @@ export function SpatialProvider({
             appMap: availableAppMap,
             navigate: navigateWithFiberDriver,
             resolutionPriority,
+            toolRegistry,
             onProgress: (_message: string, step: IntentStep) => {
               const stepMessage = formatProgress(step);
               setProgressMessage(stepMessage);
@@ -1565,28 +1625,24 @@ export function SpatialProvider({
         }
       }
 
-      if (
+      const failureReasonLower = result.failedStepReason?.toLowerCase() || '';
+      const shouldRetryFailedStepWithPlanner =
         !result.executed &&
-        result.failedStep &&
-        result.failedStepReason?.toLowerCase().includes('target not found') &&
-        resolverRef.current
-      ) {
+        Boolean(result.failedStep) &&
+        Boolean(resolverRef.current) &&
+        (failureReasonLower.includes('target not found') ||
+          (result.failedStep?.action === 'tool' && failureReasonLower.includes('current route')));
+
+      if (shouldRetryFailedStepWithPlanner && result.failedStep && resolverRef.current) {
         setProgressMessage('Retrying failed step with updated context...');
         showToast('planning', 'Retrying failed step with updated context...');
         appendCommandHistoryTrace(historyEntryId, 'Retrying failed step with updated context');
         const retryMap = refreshMapForExecution();
 
         const retrySteps = await resolverRef.current.resolveForFailedStep(
-          {
-            command: resolutionCommand,
-            inputMethod,
-            map: retryMap,
-            appMap: availableAppMap,
-            gazeTarget: commandGazeState.gazeTarget,
-            gesture: gestureRef.current.gesture
-          },
+          buildResolutionInput(retryMap, resolutionCommand),
           result.failedStep,
-          result.failedStepReason
+          result.failedStepReason || result.reason || 'Execution failed'
         );
 
         const sanitizedRetrySteps = sanitizePlanStepsForUnrequestedPostSubmitNavigation(
@@ -1601,6 +1657,7 @@ export function SpatialProvider({
             appMap: availableAppMap,
             navigate: navigateWithFiberDriver,
             resolutionPriority,
+            toolRegistry,
             onProgress: (_message, step) => {
               const stepMessage = formatProgress(step);
               setProgressMessage(stepMessage);
@@ -1628,15 +1685,7 @@ export function SpatialProvider({
         const followUpMap = refreshMapForExecution();
 
         const followUpSteps = await resolverRef.current.resolveForNewElements(
-          {
-            command: resolutionCommand,
-            inputMethod,
-            map: followUpMap,
-            appMap: availableAppMap,
-            gazeTarget: commandGazeState.gazeTarget,
-            gesture: gestureRef.current.gesture,
-            completedSteps: completedStepsHistory
-          },
+          buildResolutionInput(followUpMap, resolutionCommand, completedStepsHistory),
           result.newElementsAfterWait || [],
           completedStepsHistory
         );
@@ -1653,6 +1702,7 @@ export function SpatialProvider({
             appMap: availableAppMap,
             navigate: navigateWithFiberDriver,
             resolutionPriority,
+            toolRegistry,
             onProgress: (_message, step) => {
               const stepMessage = formatProgress(step);
               setProgressMessage(stepMessage);
@@ -1713,6 +1763,7 @@ export function SpatialProvider({
       setAndNotifyAppMap,
       showPreview,
       showToast,
+      toolRegistry,
       updateCommandHistoryEntry
     ]
   );

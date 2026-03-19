@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCapabilityMap } from '../core/CapabilityMap';
 import { IntentResolver } from '../core/IntentResolver';
-import type { AppMap, AppMapSummary, DOMCapabilityMap, DOMElementDescriptor, IntentStep } from '../types';
+import type { AppMap, AppMapSummary, DOMCapabilityMap, DOMElementDescriptor, IntentStep, ToolCapabilityMap } from '../types';
 
 const { createMessageSpy } = vi.hoisted(() => ({
   createMessageSpy: vi.fn()
@@ -274,6 +274,41 @@ function buildAppMapSummary(): AppMapSummary {
         tabs: [],
         modalTriggers: [],
         filters: []
+      }
+    ]
+  };
+}
+
+function buildToolCapabilityMap(currentRoute: string = '/dashboard'): ToolCapabilityMap {
+  return {
+    currentRoute,
+    tools: [
+      {
+        id: 'refreshDashboard',
+        description: 'Refresh dashboard',
+        parameters: [],
+        routes: [],
+        safety: 'read',
+        isGlobal: true,
+        currentRouteMatches: true,
+        requiresNavigation: false
+      },
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        parameters: [
+          {
+            name: 'title',
+            description: 'Ticket title',
+            type: 'string',
+            required: true
+          }
+        ],
+        routes: ['/tickets'],
+        safety: 'write',
+        isGlobal: false,
+        currentRouteMatches: currentRoute === '/tickets',
+        requiresNavigation: currentRoute !== '/tickets'
       }
     ]
   };
@@ -588,6 +623,53 @@ describe('IntentResolver classification and context shaping', () => {
     }
   });
 
+  it('includes the explicit tool capability map in streamed and non-streamed resolver prompt paths', async () => {
+    const resolver = new IntentResolver({ apiKey: 'test-key' });
+    const map = buildMapWithRuntime([buildDescriptor()]);
+    const appMap = buildAppMap();
+    const toolCapabilityMap = buildToolCapabilityMap('/dashboard');
+    mockStreamedTextResponse(
+      '[{"action":"navigate","target":"/tickets","value":null,"waitForDOM":true,"reason":"navigate to tickets"}]'
+    );
+
+    await resolver.resolveWithContextStreamInternal(
+      {
+        command: 'create ticket',
+        inputMethod: 'text',
+        map,
+        appMap,
+        toolCapabilityMap,
+        gazeTarget: null,
+        gesture: 'none'
+      },
+      { inputMethod: 'typed' }
+    );
+
+    await resolver.resolve({
+      command: 'create ticket',
+      inputMethod: 'text',
+      map,
+      appMap,
+      toolCapabilityMap,
+      gazeTarget: null,
+      gesture: 'none'
+    });
+
+    const streamedPrompt = ((createMessageSpy.mock.calls[0]?.[0] as { messages?: Array<{ content?: string }> })?.messages?.[0]
+      ?.content || '');
+    const resolvePrompt = ((createMessageSpy.mock.calls[1]?.[0] as { messages?: Array<{ content?: string }> })?.messages?.[0]
+      ?.content || '');
+
+    for (const prompt of [streamedPrompt, resolvePrompt]) {
+      expect(prompt).toContain('"toolCapabilityMap"');
+      expect(prompt).toContain('"id":"refreshDashboard"');
+      expect(prompt).toContain('"id":"createTicket"');
+      expect(prompt).toContain('"isGlobal":true');
+      expect(prompt).toContain('"requiresNavigation":true');
+      expect(prompt).toContain('"currentRouteMatches":false');
+    }
+  });
+
   it('includes modal in-place instruction in system prompts', async () => {
     const resolver = new IntentResolver({ apiKey: 'test-key' });
     const map = buildMapWithRuntime([buildDescriptor()]);
@@ -625,6 +707,61 @@ describe('IntentResolver classification and context shaping', () => {
     );
     expect(resolveSystemPrompt).toContain(
       'If runtime state shows an open modal/dialog and the command is about fill/edit/select/submit, operate in that open modal/dialog in place.'
+    );
+  });
+
+  it('documents global tools, route-specific tools, and navigate-then-tool behavior in system prompts', async () => {
+    const resolver = new IntentResolver({ apiKey: 'test-key' });
+    const map = buildMapWithRuntime([buildDescriptor()]);
+    const appMap = buildAppMap();
+    const toolCapabilityMap = buildToolCapabilityMap('/dashboard');
+    mockStreamedTextResponse(
+      '[{"action":"navigate","target":"/tickets","value":null,"waitForDOM":true,"reason":"navigate to tickets"},{"action":"tool","toolId":"createTicket","args":{"title":"Pump Failure"},"reason":"use explicit app-native tool"}]'
+    );
+
+    await resolver.resolveWithContextStreamInternal(
+      {
+        command: 'create ticket',
+        inputMethod: 'text',
+        map,
+        appMap,
+        toolCapabilityMap,
+        gazeTarget: null,
+        gesture: 'none'
+      },
+      { inputMethod: 'typed' }
+    );
+
+    await resolver.resolve({
+      command: 'create ticket',
+      inputMethod: 'text',
+      map,
+      appMap,
+      toolCapabilityMap,
+      gazeTarget: null,
+      gesture: 'none'
+    });
+
+    const streamedSystemPrompt = (createMessageSpy.mock.calls[0]?.[0] as { system?: string })?.system || '';
+    const resolveSystemPrompt = (createMessageSpy.mock.calls[1]?.[0] as { system?: string })?.system || '';
+
+    expect(streamedSystemPrompt).toContain(
+      'toolCapabilityMap: explicit app-native tools, including global tools and route-specific tools across the whole app'
+    );
+    expect(streamedSystemPrompt).toContain('Global tools can be used from any route');
+    expect(streamedSystemPrompt).toContain(
+      'Route-specific tools remain available even when the current route is different'
+    );
+    expect(streamedSystemPrompt).toContain('plan navigate first and then the tool');
+    expect(streamedSystemPrompt).toContain('Never invent tool ids');
+    expect(resolveSystemPrompt).toContain(
+      'Prefer a registered tool when the tool is clearly a better fit than DOM/app-map inference'
+    );
+    expect(resolveSystemPrompt).toContain(
+      'Route-specific tools remain available even when current route differs'
+    );
+    expect(resolveSystemPrompt).toContain(
+      'Destructive tools should only be used for explicit destructive intent'
     );
   });
 
@@ -758,6 +895,45 @@ describe('IntentResolver classification and context shaping', () => {
       expect(resolved.plan.steps[1]?.target).toBe('New Ticket');
     }
     expect(streamedSteps.length).toBe(2);
+  });
+
+  it('parses tool steps from model output', async () => {
+    const resolver = new IntentResolver({ apiKey: 'test-key' });
+    const map = buildMapWithRuntime([buildDescriptor()]);
+    const appMap = buildAppMap();
+    const toolCapabilityMap = buildToolCapabilityMap('/dashboard');
+    mockStreamedTextResponse(
+      '[{"action":"navigate","target":"/tickets","value":null,"waitForDOM":true,"reason":"navigate to tickets"},{"action":"tool","toolId":"createTicket","args":{"title":"Pump Failure"},"reason":"use explicit app-native tool"}]'
+    );
+
+    const resolved = await resolver.resolveWithContextStreamInternal(
+      {
+        command: 'create ticket',
+        inputMethod: 'text',
+        map,
+        appMap,
+        toolCapabilityMap,
+        gazeTarget: null,
+        gesture: 'none'
+      },
+      { inputMethod: 'typed' }
+    );
+
+    expect(resolved?.type).toBe('dom_steps');
+    if (resolved?.type === 'dom_steps') {
+      expect(resolved.plan.steps).toMatchObject([
+        {
+          action: 'navigate',
+          target: '/tickets'
+        },
+        {
+          action: 'tool',
+          toolId: 'createTicket',
+          args: { title: 'Pump Failure' },
+          reason: 'use explicit app-native tool'
+        }
+      ]);
+    }
   });
 
 });
