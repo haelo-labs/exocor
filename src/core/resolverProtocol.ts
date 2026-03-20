@@ -3,6 +3,7 @@ import type { DOMElementDescriptor, IntentPlan, IntentResolutionInput, IntentSte
 export type ExocorResolverOperation =
   | 'initial_stream'
   | 'resolve'
+  | 'preferred_tool_intent'
   | 'preferred_tool_retry'
   | 'failed_step'
   | 'new_elements'
@@ -17,6 +18,13 @@ export interface ExocorInitialStreamRequest {
 export interface ExocorResolveRequest {
   operation: 'resolve';
   input: IntentResolutionInput;
+}
+
+export interface ExocorPreferredToolIntentRequest {
+  operation: 'preferred_tool_intent';
+  input: IntentResolutionInput;
+  preferredToolId: string;
+  preferredReason?: string;
 }
 
 export interface ExocorPreferredToolRetryRequest {
@@ -51,6 +59,7 @@ export interface ExocorFollowUpRequest {
 export type ExocorResolverRequest =
   | ExocorInitialStreamRequest
   | ExocorResolveRequest
+  | ExocorPreferredToolIntentRequest
   | ExocorPreferredToolRetryRequest
   | ExocorFailedStepRequest
   | ExocorNewElementsRequest
@@ -64,7 +73,28 @@ export interface ExocorStepListResponse {
   steps: IntentStep[];
 }
 
-export type ExocorResolverJsonResponse = ExocorResolveResponse | ExocorStepListResponse;
+export type ExocorPreferredToolIntentResult =
+  | {
+      status: 'ready';
+      args: Record<string, unknown>;
+    }
+  | {
+      status: 'clarification';
+      question: string;
+    }
+  | {
+      status: 'fallback';
+      reason: string;
+    };
+
+export interface ExocorPreferredToolIntentResponse {
+  result: ExocorPreferredToolIntentResult;
+}
+
+export type ExocorResolverJsonResponse =
+  | ExocorResolveResponse
+  | ExocorStepListResponse
+  | ExocorPreferredToolIntentResponse;
 
 export type ExocorResolverEnvelope<T> =
   | {

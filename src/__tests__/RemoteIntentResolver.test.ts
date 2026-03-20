@@ -158,6 +158,51 @@ describe('RemoteIntentResolver', () => {
     });
   });
 
+  it('posts preferred-tool intent requests to the backend', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            result: {
+              status: 'ready',
+              args: {
+                title: 'Pump Failure'
+              }
+            }
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      )
+    );
+
+    const resolver = new RemoteIntentResolver({ backendUrl: '/api/exocor/resolve' });
+    const result = await resolver.resolvePreferredToolIntent(
+      buildResolutionInput(),
+      'createTicket',
+      'strong semantic match'
+    );
+
+    expect(result).toMatchObject({
+      status: 'ready',
+      args: {
+        title: 'Pump Failure'
+      }
+    });
+    const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const payload = JSON.parse(String(requestInit?.body || '{}'));
+    expect(payload).toMatchObject({
+      operation: 'preferred_tool_intent',
+      preferredToolId: 'createTicket',
+      preferredReason: 'strong semantic match'
+    });
+  });
+
   it('posts preferred-tool retry requests to the backend', async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(

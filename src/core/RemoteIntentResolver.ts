@@ -4,6 +4,8 @@ import type {
   ExocorFollowUpRequest,
   ExocorInitialStreamRequest,
   ExocorNewElementsRequest,
+  ExocorPreferredToolIntentRequest,
+  ExocorPreferredToolIntentResult,
   ExocorPreferredToolRetryRequest,
   ExocorResolveRequest,
   ExocorResolverEnvelope,
@@ -160,6 +162,33 @@ export class RemoteIntentResolver {
     }
 
     return payload.data.plan;
+  }
+
+  async resolvePreferredToolIntent(
+    input: IntentResolutionInput,
+    preferredToolId: string,
+    preferredReason = ''
+  ): Promise<ExocorPreferredToolIntentResult> {
+    const payload = await this.postJson<{ result: ExocorPreferredToolIntentResult }>({
+      operation: 'preferred_tool_intent',
+      input,
+      preferredToolId,
+      ...(preferredReason ? { preferredReason } : {})
+    } satisfies ExocorPreferredToolIntentRequest);
+
+    if (!payload?.ok) {
+      return {
+        status: 'fallback',
+        reason: 'Preferred tool resolution was unavailable.'
+      };
+    }
+
+    return (
+      payload.data.result || {
+        status: 'fallback',
+        reason: 'Preferred tool resolution returned no result.'
+      }
+    );
   }
 
   async resolveWithPreferredToolRetry(

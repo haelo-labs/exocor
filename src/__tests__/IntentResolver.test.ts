@@ -782,6 +782,87 @@ describe('IntentResolver classification and context shaping', () => {
     );
   });
 
+  it('resolves a selected preferred tool into validated args instead of returning workflow steps', async () => {
+    const resolver = new IntentResolver({ apiKey: 'test-key' });
+    const map = buildMapWithRuntime([buildDescriptor()]);
+    const appMap = buildAppMap();
+    const toolCapabilityMap = buildToolCapabilityMap('/dashboard');
+    createMessageSpy.mockResolvedValueOnce({
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: [
+        {
+          type: 'text',
+          text: '{"status":"ready","args":{"title":"Pump Failure"}}'
+        }
+      ]
+    });
+
+    const result = await resolver.resolvePreferredToolIntent(
+      {
+        command: 'create a ticket called Pump Failure',
+        inputMethod: 'text',
+        map,
+        appMap,
+        toolCapabilityMap,
+        gazeTarget: null,
+        gesture: 'none'
+      },
+      'createTicket',
+      'strong semantic match for ticket creation'
+    );
+
+    expect(result).toEqual({
+      status: 'ready',
+      args: { title: 'Pump Failure' }
+    });
+
+    const request = createMessageSpy.mock.calls[0]?.[0] as {
+      system?: string;
+      messages?: Array<{ role: string; content: string }>;
+    };
+    expect(request.system).toContain(
+      'The host application has already selected one strong preferred tool as the authoritative execution path'
+    );
+    expect(request.system).toContain('Never return DOM plans');
+    expect(request.system).toContain('Only use declared parameter names from the selected tool schema');
+    expect(request.system).toContain(
+      'If the tool is route-specific and the current route does not match, ignore navigation'
+    );
+    expect(request.messages?.[0]?.content || '').toContain('"id":"createTicket"');
+  });
+
+  it('asks for clarification when the authoritative preferred tool is missing a required argument', async () => {
+    const resolver = new IntentResolver({ apiKey: 'test-key' });
+    createMessageSpy.mockResolvedValueOnce({
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: [
+        {
+          type: 'text',
+          text: '{"status":"clarification","question":"What title should I use?"}'
+        }
+      ]
+    });
+
+    const result = await resolver.resolvePreferredToolIntent(
+      {
+        command: 'please create a ticket',
+        inputMethod: 'text',
+        map: buildMapWithRuntime([buildDescriptor()]),
+        appMap: buildAppMap(),
+        toolCapabilityMap: buildToolCapabilityMap('/dashboard'),
+        gazeTarget: null,
+        gesture: 'none'
+      },
+      'createTicket',
+      'strong semantic match for ticket creation'
+    );
+
+    expect(result).toEqual({
+      status: 'clarification',
+      question: 'What title should I use?'
+    });
+  });
+
   it('retries with a stronger preferred-tool correction prompt when a strong tool was ignored', async () => {
     const resolver = new IntentResolver({ apiKey: 'test-key' });
     const map = buildMapWithRuntime([buildDescriptor()]);

@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildCompressedCapabilityMap } from './CapabilityMap';
 import { summarizeAppMapForResolver } from './DOMScanner';
+import type { ExocorPreferredToolIntentResult } from './resolverProtocol';
 import type {
   AppMap,
   AppMapSummary,
@@ -196,6 +197,64 @@ function parseClarificationDecision(text: string): { needsClarification: boolean
     needsClarification: Boolean(decision.needsClarification),
     question: typeof decision.question === 'string' ? decision.question.trim() : ''
   };
+}
+
+function parsePreferredToolIntentResult(text: string): ExocorPreferredToolIntentResult | null {
+  const jsonCandidate = toObjectJsonCandidate(text);
+  if (!jsonCandidate) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonCandidate);
+  } catch {
+    try {
+      parsed = JSON.parse(normalizeLooseJson(jsonCandidate));
+    } catch {
+      return null;
+    }
+  }
+
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  const status = String(parsed.status || '').trim().toLowerCase();
+
+  if (status === 'ready') {
+    const args = parsed.args == null ? {} : isRecord(parsed.args) ? parsed.args : null;
+    if (!args) {
+      return null;
+    }
+
+    return {
+      status: 'ready',
+      args
+    };
+  }
+
+  if (status === 'clarification') {
+    const question = typeof parsed.question === 'string' ? parsed.question.trim() : '';
+    if (!question) {
+      return null;
+    }
+
+    return {
+      status: 'clarification',
+      question
+    };
+  }
+
+  if (status === 'fallback') {
+    const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : '';
+    return {
+      status: 'fallback',
+      reason: reason || 'Preferred tool resolution could not determine safe arguments.'
+    };
+  }
+
+  return null;
 }
 
 function isAction(value: string): value is ResolverStepAction {
@@ -1179,6 +1238,106 @@ PREFERRED TOOL CORRECTION:
     ].join('\n\n');
 
     return this.callClaude(userPrompt, retrySystemPrompt);
+  }
+
+  async resolvePreferredToolIntent(
+    input: IntentResolutionInput,
+    preferredToolId: string,
+    preferredReason = ''
+  ): Promise<ExocorPreferredToolIntentResult> {
+    const command = normalize(input.command);
+    if (!command || !this.client) {
+      return {
+        status: 'fallback',
+        reason: 'Preferred tool resolution is unavailable.'
+      };
+    }
+
+    const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
+    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
+    const preferredTool = input.toolCapabilityMap?.tools.find((tool) => tool.id === preferredToolId) || null;
+
+    if (!preferredTool) {
+      return {
+        status: 'fallback',
+        reason: `Preferred tool "${preferredToolId}" was not found in the capability map.`
+      };
+    }
+
+    const systemPrompt = `You are a preferred-tool argument resolver.
+The host application has already selected one strong preferred tool as the authoritative execution path for this command.
+You do NOT decide whether to use DOM steps, app-map steps, or a different tool.
+Your only job is to prepare a safe invocation for the selected tool.
+
+Return ONLY one valid JSON object in exactly one of these shapes:
+{"status":"ready","args":{"declaredParam":"value"}}
+{"status":"clarification","question":"one short sentence"}
+{"status":"fallback","reason":"short reason"}
+
+Rules:
+- The selected tool is already the primary path unless it truly cannot satisfy the request.
+- Never return steps.
+- Never return DOM plans.
+- Never invent parameter names.
+- Only use declared parameter names from the selected tool schema.
+- Omit optional parameters unless the user explicitly asked for them or they can be inferred confidently.
+- If every required parameter is confidently available from the user command or context, return {"status":"ready","args":{...}}.
+- If a required parameter is missing and cannot be inferred confidently, return {"status":"clarification","question":"..."}.
+- Return {"status":"fallback","reason":"..."} only when the user's request clearly includes work that this tool cannot safely satisfy by itself.
+- If the tool is route-specific and the current route does not match, ignore navigation. The host will handle navigate then tool.
+- When in doubt, prefer ready if required args are known. Otherwise prefer clarification over fallback.`;
+
+    const userPrompt = [
+      `User intent: ${command}`,
+      `Current page: ${compressed.currentRoute}`,
+      `Selected preferred tool: ${JSON.stringify({
+        id: preferredTool.id,
+        description: preferredTool.description,
+        parameters: preferredTool.parameters,
+        routes: preferredTool.routes,
+        isGlobal: preferredTool.isGlobal,
+        currentRouteMatches: preferredTool.currentRouteMatches,
+        requiresNavigation: preferredTool.requiresNavigation,
+        safety: preferredTool.safety
+      })}`,
+      `Preferred tool reasoning: ${preferredReason || preferredTool.preferredReason || 'strong semantic match'}`,
+      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
+      `App context: ${JSON.stringify(contextForClaude)}`,
+      'Return only the JSON object.'
+    ].join('\n\n');
+
+    try {
+      const response = await this.client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        temperature: 0,
+        max_tokens: 240,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }]
+      });
+
+      const text = response.content
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
+
+      return (
+        parsePreferredToolIntentResult(text) || {
+          status: 'fallback',
+          reason: 'Preferred tool resolution returned an unreadable response.'
+        }
+      );
+    } catch (error) {
+      if (this.debug) {
+        // eslint-disable-next-line no-console
+        console.warn('[Exocor] Preferred tool resolution failed.', error);
+      }
+
+      return {
+        status: 'fallback',
+        reason: 'Preferred tool resolution failed.'
+      };
+    }
   }
 
   private async callClaude(userPrompt: string, systemPrompt = CLAUDE_SYSTEM_PROMPT): Promise<IntentStep[]> {

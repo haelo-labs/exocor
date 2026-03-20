@@ -4,6 +4,7 @@ import type {
   ExocorFollowUpRequest,
   ExocorInitialStreamRequest,
   ExocorNewElementsRequest,
+  ExocorPreferredToolIntentRequest,
   ExocorPreferredToolRetryRequest,
   ExocorResolveRequest,
   ExocorResolverEnvelope,
@@ -43,9 +44,15 @@ function isResolverRequest(value: unknown): value is ExocorResolverRequest {
     return false;
   }
 
-  return ['initial_stream', 'resolve', 'preferred_tool_retry', 'failed_step', 'new_elements', 'follow_up'].includes(
-    value.operation
-  );
+  return [
+    'initial_stream',
+    'resolve',
+    'preferred_tool_intent',
+    'preferred_tool_retry',
+    'failed_step',
+    'new_elements',
+    'follow_up'
+  ].includes(value.operation);
 }
 
 function isIntentResolutionInput(value: unknown): value is IntentResolutionInput {
@@ -181,6 +188,25 @@ export function createExocorResolverEndpoint(options: ExocorResolverEndpointOpti
           }
           const plan = await resolver.resolve(resolveRequest.input);
           return jsonResponse({ ok: true, data: { plan } });
+        }
+
+        case 'preferred_tool_intent': {
+          const preferredToolIntentRequest = payload as ExocorPreferredToolIntentRequest;
+          if (
+            !isIntentResolutionInput(preferredToolIntentRequest.input) ||
+            typeof preferredToolIntentRequest.preferredToolId !== 'string' ||
+            (preferredToolIntentRequest.preferredReason !== undefined &&
+              typeof preferredToolIntentRequest.preferredReason !== 'string')
+          ) {
+            return jsonResponse({ ok: false, error: 'Invalid resolver request.' }, 400);
+          }
+
+          const result = await resolver.resolvePreferredToolIntent(
+            preferredToolIntentRequest.input,
+            preferredToolIntentRequest.preferredToolId,
+            preferredToolIntentRequest.preferredReason || ''
+          );
+          return jsonResponse({ ok: true, data: { result } });
         }
 
         case 'preferred_tool_retry': {

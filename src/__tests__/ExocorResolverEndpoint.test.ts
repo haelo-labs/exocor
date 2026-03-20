@@ -6,6 +6,7 @@ import type { IntentPlan, IntentResolutionInput, IntentStep } from '../types';
 const {
   resolveSpy,
   resolveStreamSpy,
+  resolvePreferredToolIntentSpy,
   resolveWithPreferredToolRetrySpy,
   resolveForFailedStepSpy,
   resolveForNewElementsSpy,
@@ -13,6 +14,7 @@ const {
 } = vi.hoisted(() => ({
   resolveSpy: vi.fn(),
   resolveStreamSpy: vi.fn(),
+  resolvePreferredToolIntentSpy: vi.fn(),
   resolveWithPreferredToolRetrySpy: vi.fn(),
   resolveForFailedStepSpy: vi.fn(),
   resolveForNewElementsSpy: vi.fn(),
@@ -34,6 +36,10 @@ vi.mock('../core/IntentResolver', () => ({
       }
     ) {
       return resolveStreamSpy(input, runtimeContext, callbacks);
+    }
+
+    async resolvePreferredToolIntent(input: IntentResolutionInput, preferredToolId: string, preferredReason?: string) {
+      return resolvePreferredToolIntentSpy(input, preferredToolId, preferredReason);
     }
 
     async resolveWithPreferredToolRetry(
@@ -104,6 +110,7 @@ describe('createExocorResolverEndpoint', () => {
   beforeEach(() => {
     resolveSpy.mockReset();
     resolveStreamSpy.mockReset();
+    resolvePreferredToolIntentSpy.mockReset();
     resolveWithPreferredToolRetrySpy.mockReset();
     resolveForFailedStepSpy.mockReset();
     resolveForNewElementsSpy.mockReset();
@@ -263,6 +270,37 @@ describe('createExocorResolverEndpoint', () => {
         plan
       }
     });
+  });
+
+  it('returns JSON envelopes for preferred-tool intent operations', async () => {
+    const result = {
+      status: 'ready' as const,
+      args: { title: 'Pump Failure' }
+    };
+    resolvePreferredToolIntentSpy.mockResolvedValueOnce(result);
+
+    const handler = createExocorResolverEndpoint({ apiKey: 'server-key' });
+    const input = buildResolutionInput();
+    const response = await handler(
+      new Request('http://localhost/api/exocor/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: 'preferred_tool_intent',
+          input,
+          preferredToolId: 'createTicket',
+          preferredReason: 'strong semantic match'
+        })
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      data: {
+        result
+      }
+    });
+    expect(resolvePreferredToolIntentSpy).toHaveBeenCalledWith(input, 'createTicket', 'strong semantic match');
   });
 
   it('returns JSON envelopes for preferred-tool retry operations', async () => {

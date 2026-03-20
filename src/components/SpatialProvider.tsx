@@ -67,7 +67,6 @@ const HISTORY_STORAGE_KEY = 'exocor.command-history.v1';
 const LEGACY_HISTORY_STORAGE_KEY = 'haelo.command-history.v1';
 const HISTORY_SESSION_STORAGE_KEY = LEGACY_HISTORY_STORAGE_KEY;
 type VoiceGazeSnapshot = GazeState;
-const DOM_RECONSTRUCTION_ACTIONS = new Set<IntentStep['action']>(['click', 'fill', 'submit', 'scroll']);
 
 interface PendingClarificationState {
   question: string;
@@ -432,6 +431,38 @@ function buildDirectToolPlan(command: string, toolId: string): IntentPlan {
   };
 }
 
+function buildAuthoritativePreferredToolPlan(
+  command: string,
+  preferredTool: ToolCapabilityEntry,
+  args: Record<string, unknown>
+): IntentPlan {
+  const steps: IntentStep[] = [];
+
+  if (!preferredTool.isGlobal && !preferredTool.currentRouteMatches && preferredTool.routes[0]) {
+    steps.push({
+      action: 'navigate',
+      target: preferredTool.routes[0],
+      value: null,
+      waitForDOM: true,
+      reason: `navigate to ${preferredTool.routes[0]} for app-native tool`
+    });
+  }
+
+  steps.push({
+    action: 'tool',
+    toolId: preferredTool.id,
+    args,
+    reason: 'use preferred app-native tool'
+  });
+
+  return {
+    source: 'deterministic',
+    rawCommand: normalizeCommand(command),
+    confidence: 0.99,
+    steps
+  };
+}
+
 function getPreferredToolEntries(toolCapabilityMap: ToolCapabilityMap | null): ToolCapabilityEntry[] {
   if (!toolCapabilityMap?.preferredToolIds?.length) {
     return [];
@@ -457,39 +488,6 @@ function isNavigateThenToolPlan(plan: IntentPlan, toolId: string): boolean {
   }
 
   return steps.slice(0, toolIndex).some((step) => step.action === 'navigate' && step.target?.startsWith('/'));
-}
-
-function isEquivalentDomReconstructionPlan(plan: IntentPlan, preferredTool: ToolCapabilityEntry): boolean {
-  const actionableSteps = plan.steps.filter((step) => step.action !== 'wait');
-  if (!actionableSteps.length || actionableSteps.some((step) => step.action === 'tool')) {
-    return false;
-  }
-
-  const domActionSteps = actionableSteps.filter((step) => DOM_RECONSTRUCTION_ACTIONS.has(step.action));
-  const preferredRoutes = new Set(preferredTool.routes);
-  const navigateToPreferredRouteIndex = actionableSteps.findIndex(
-    (step) => step.action === 'navigate' && Boolean(step.target) && preferredRoutes.has(step.target as string)
-  );
-  const hasCreateEditPattern =
-    domActionSteps.some((step) => step.action === 'fill') &&
-    domActionSteps.some((step) => step.action === 'click' || step.action === 'submit');
-  const hasManualWorkflowAfterRouteNavigate =
-    navigateToPreferredRouteIndex >= 0 &&
-    actionableSteps.slice(navigateToPreferredRouteIndex + 1).some((step) => DOM_RECONSTRUCTION_ACTIONS.has(step.action));
-
-  if (domActionSteps.length >= 3) {
-    return true;
-  }
-
-  if (hasCreateEditPattern && (preferredTool.isGlobal || preferredTool.currentRouteMatches || navigateToPreferredRouteIndex >= 0)) {
-    return true;
-  }
-
-  if (!preferredTool.isGlobal && hasManualWorkflowAfterRouteNavigate) {
-    return true;
-  }
-
-  return false;
 }
 
 function toHistoryInputMethod(inputMethod: CommandInputMethod): CommandHistoryInputMethod {
@@ -1433,10 +1431,10 @@ export function SpatialProvider({
       setDomMap(resolutionMap);
 
       let resolvedPlan: IntentPlan | null = null;
-      let planContextMap = resolutionMap;
       let resolutionPriority: ResolutionPriority = 'dom_only';
       let latestIntentSource: IntentAction['source'] = deterministicResolution ? 'deterministic' : 'claude';
       let initialExecutionResult = null as Awaited<ReturnType<ActionExecutor['executeSequence']>> | null;
+      let usedAuthoritativePreferredTool = false;
       const refreshMapForExecution = (): DOMCapabilityMap => {
         const refreshed = domScannerRef.current?.refresh() || domMapRef.current;
         routerNavigateRef.current = getRouterNavigateFromFiber();
@@ -1456,6 +1454,30 @@ export function SpatialProvider({
           return false;
         }
       };
+      const handleClarificationRequest = (question: string, traceLabel: string): boolean => {
+        setResolutionStatus(() => 'executed');
+        setIsResolving(() => false);
+        setProgressMessage(question);
+        showPreview(question);
+        dismissToast();
+        appendCommandHistoryTrace(historyEntryId, traceLabel);
+        appendCommandHistoryTrace(historyEntryId, `Clarification asked: ${question}`);
+        updateCommandHistoryEntry(historyEntryId, 'planning', 'Clarification requested');
+        setPendingClarification({
+          question,
+          baseCommand,
+          historyEntryId
+        });
+
+        if (inputMethod === 'voice') {
+          setVoiceClarificationQuestion(question);
+        } else {
+          setVoiceClarificationQuestion(null);
+          setIsPanelOpen(true);
+        }
+
+        return true;
+      };
       if (deterministicResolution) {
         resolvedPlan = deterministicResolution.plan;
         resolutionPriority = deterministicResolution.resolutionPriority;
@@ -1468,9 +1490,72 @@ export function SpatialProvider({
           );
         }
       }
+      if (!resolvedPlan && strongPreferredTool && resolverRef.current) {
+        if (!strongPreferredTool.parameters.length) {
+          resolvedPlan = buildAuthoritativePreferredToolPlan(resolutionCommand, strongPreferredTool, {});
+          resolutionPriority = 'app_map_only';
+          latestIntentSource = 'deterministic';
+          usedAuthoritativePreferredTool = true;
+          if (strongPreferredTool.currentRouteMatches || strongPreferredTool.isGlobal) {
+            appendCommandHistoryTrace(
+              historyEntryId,
+              `Using authoritative preferred tool directly: ${strongPreferredTool.id}`
+            );
+          } else {
+            appendCommandHistoryTrace(
+              historyEntryId,
+              `Using authoritative navigate -> tool path: ${strongPreferredTool.id}`
+            );
+          }
+        } else {
+          appendCommandHistoryTrace(historyEntryId, `Resolving arguments for preferred tool: ${strongPreferredTool.id}`);
+          const preferredToolIntent = await resolverRef.current.resolvePreferredToolIntent(
+            buildResolutionInput(resolutionMap, resolutionCommand),
+            strongPreferredTool.id,
+            strongPreferredTool.preferredReason || 'strong semantic match'
+          );
+
+          if (preferredToolIntent.status === 'clarification') {
+            return handleClarificationRequest(
+              preferredToolIntent.question,
+              `Preferred tool requires clarification: ${strongPreferredTool.id}`
+            );
+          }
+
+          if (preferredToolIntent.status === 'ready') {
+            const validation = toolRegistry.validateArgs(strongPreferredTool.id, preferredToolIntent.args);
+            if (validation.ok) {
+              resolvedPlan = buildAuthoritativePreferredToolPlan(resolutionCommand, strongPreferredTool, validation.args);
+              resolutionPriority = 'app_map_only';
+              latestIntentSource = 'deterministic';
+              usedAuthoritativePreferredTool = true;
+              if (strongPreferredTool.currentRouteMatches || strongPreferredTool.isGlobal) {
+                appendCommandHistoryTrace(
+                  historyEntryId,
+                  `Using authoritative preferred tool directly: ${strongPreferredTool.id}`
+                );
+              } else {
+                appendCommandHistoryTrace(
+                  historyEntryId,
+                  `Using authoritative navigate -> tool path: ${strongPreferredTool.id}`
+                );
+              }
+            } else {
+              appendCommandHistoryTrace(
+                historyEntryId,
+                `Preferred tool arguments failed validation; using normal planner behavior: ${validation.reason}`
+              );
+            }
+          } else {
+            appendCommandHistoryTrace(
+              historyEntryId,
+              `Preferred tool could not cover the full intent authoritatively; using normal planner behavior: ${preferredToolIntent.reason}`
+            );
+          }
+        }
+      }
       if (!resolvedPlan && resolverRef.current) {
-        const useStreamExecution =
-          inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution && !strongPreferredTool;
+        const useStreamExecution = inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution;
         const streamSanitizer = createStreamingStepSanitizer(baseCommand);
         const streamedSteps: IntentStep[] = [];
         const streamQueueRef: { current: AsyncStepQueue | null } = { current: null };
@@ -1542,27 +1627,7 @@ export function SpatialProvider({
             }
           }
 
-          setResolutionStatus(() => 'executed');
-          setIsResolving(() => false);
-          setProgressMessage(resolvedIntent.text);
-          showPreview(resolvedIntent.text);
-          dismissToast();
-          appendCommandHistoryTrace(historyEntryId, 'Returned text response');
-          appendCommandHistoryTrace(historyEntryId, `Clarification asked: ${resolvedIntent.text}`);
-          updateCommandHistoryEntry(historyEntryId, 'planning', 'Clarification requested');
-          setPendingClarification({
-            question: resolvedIntent.text,
-            baseCommand,
-            historyEntryId
-          });
-
-          if (inputMethod === 'voice') {
-            setVoiceClarificationQuestion(resolvedIntent.text);
-          } else {
-            setVoiceClarificationQuestion(null);
-            setIsPanelOpen(true);
-          }
-          return Boolean(true);
+          return handleClarificationRequest(resolvedIntent.text, 'Returned text response');
         } else if (resolvedIntent?.type === 'dom_steps') {
           const sanitizedResolvedSteps = sanitizePlanStepsForUnrequestedPostSubmitNavigation(
             resolvedIntent.plan.steps,
@@ -1585,7 +1650,6 @@ export function SpatialProvider({
         appendCommandHistoryTrace(historyEntryId, 'Falling back to DOM-only resolution');
         const fallbackMap = refreshMapForExecution();
         const fallbackResolutionInput = buildResolutionInput(fallbackMap, resolutionCommand);
-        planContextMap = fallbackMap;
         resolutionPriority = 'dom_only';
         resolvedPlan = await resolverRef.current!.resolve(fallbackResolutionInput);
         if (resolvedPlan) {
@@ -1598,40 +1662,6 @@ export function SpatialProvider({
           };
         } // resolvedPlan
       } // fallback DOM-only resolution
-
-      if (
-        resolvedPlan &&
-        strongPreferredTool &&
-        resolverRef.current &&
-        !planUsesTool(resolvedPlan, strongPreferredTool.id) &&
-        isEquivalentDomReconstructionPlan(resolvedPlan, strongPreferredTool)
-      ) {
-        appendCommandHistoryTrace(historyEntryId, 'Planner ignored preferred tool; retrying with stronger preference');
-        setProgressMessage('Retrying with stronger tool preference...');
-        showToast('planning', 'Retrying with stronger tool preference...');
-
-        const retrySteps = await resolverRef.current.resolveWithPreferredToolRetry(
-          buildResolutionInput(planContextMap, resolutionCommand),
-          strongPreferredTool.id,
-          strongPreferredTool.preferredReason || 'strong semantic match',
-          resolvedPlan
-        );
-
-        if (retrySteps.length) {
-          const retriedPlan: IntentPlan = {
-            ...resolvedPlan,
-            steps: sanitizePlanStepsForUnrequestedPostSubmitNavigation(retrySteps, baseCommand)
-          };
-
-          if (planUsesTool(retriedPlan, strongPreferredTool.id)) {
-            resolvedPlan = retriedPlan;
-          }
-        }
-
-        if (resolvedPlan && !planUsesTool(resolvedPlan, strongPreferredTool.id)) {
-          appendCommandHistoryTrace(historyEntryId, 'Planner ignored preferred tool; falling back to DOM plan');
-        }
-      }
 
       if (!resolvedPlan || !resolvedPlan.steps.length) {
         setIsResolving(false);
@@ -1650,7 +1680,12 @@ export function SpatialProvider({
         return false;
       }
 
-      if (strongPreferredTool && planUsesTool(resolvedPlan, strongPreferredTool.id)) {
+      if (
+        latestIntentSource === 'claude' &&
+        !usedAuthoritativePreferredTool &&
+        strongPreferredTool &&
+        planUsesTool(resolvedPlan, strongPreferredTool.id)
+      ) {
         if (isNavigateThenToolPlan(resolvedPlan, strongPreferredTool.id)) {
           appendCommandHistoryTrace(historyEntryId, `Planner used navigate -> tool: ${strongPreferredTool.id}`);
         } else {
