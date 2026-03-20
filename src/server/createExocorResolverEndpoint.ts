@@ -4,6 +4,7 @@ import type {
   ExocorFollowUpRequest,
   ExocorInitialStreamRequest,
   ExocorNewElementsRequest,
+  ExocorPreferredToolRetryRequest,
   ExocorResolveRequest,
   ExocorResolverEnvelope,
   ExocorResolverRequest,
@@ -42,7 +43,9 @@ function isResolverRequest(value: unknown): value is ExocorResolverRequest {
     return false;
   }
 
-  return ['initial_stream', 'resolve', 'failed_step', 'new_elements', 'follow_up'].includes(value.operation);
+  return ['initial_stream', 'resolve', 'preferred_tool_retry', 'failed_step', 'new_elements', 'follow_up'].includes(
+    value.operation
+  );
 }
 
 function isIntentResolutionInput(value: unknown): value is IntentResolutionInput {
@@ -178,6 +181,27 @@ export function createExocorResolverEndpoint(options: ExocorResolverEndpointOpti
           }
           const plan = await resolver.resolve(resolveRequest.input);
           return jsonResponse({ ok: true, data: { plan } });
+        }
+
+        case 'preferred_tool_retry': {
+          const retryRequest = payload as ExocorPreferredToolRetryRequest;
+          if (
+            !isIntentResolutionInput(retryRequest.input) ||
+            typeof retryRequest.preferredToolId !== 'string' ||
+            typeof retryRequest.preferredReason !== 'string' ||
+            !retryRequest.rejectedPlan ||
+            !Array.isArray(retryRequest.rejectedPlan.steps)
+          ) {
+            return jsonResponse({ ok: false, error: 'Invalid resolver request.' }, 400);
+          }
+
+          const steps = await resolver.resolveWithPreferredToolRetry(
+            retryRequest.input,
+            retryRequest.preferredToolId,
+            retryRequest.preferredReason,
+            retryRequest.rejectedPlan
+          );
+          return jsonResponse({ ok: true, data: { steps } });
         }
 
         case 'failed_step': {

@@ -158,6 +158,71 @@ describe('RemoteIntentResolver', () => {
     });
   });
 
+  it('posts preferred-tool retry requests to the backend', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            steps: [
+              {
+                action: 'tool',
+                toolId: 'createTicket',
+                args: { title: 'Pump Failure' },
+                reason: 'use preferred app-native tool'
+              }
+            ]
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      )
+    );
+
+    const resolver = new RemoteIntentResolver({ backendUrl: '/api/exocor/resolve' });
+    const steps = await resolver.resolveWithPreferredToolRetry(
+      buildResolutionInput(),
+      'createTicket',
+      'strong semantic match',
+      {
+        source: 'claude',
+        rawCommand: 'create a ticket',
+        confidence: 0.9,
+        steps: [
+          {
+            action: 'click',
+            target: 'New Ticket',
+            value: null,
+            waitForDOM: true,
+            reason: 'open new ticket modal'
+          }
+        ]
+      }
+    );
+
+    expect(steps[0]).toMatchObject({
+      action: 'tool',
+      toolId: 'createTicket'
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/exocor/resolve',
+      expect.objectContaining({
+        method: 'POST'
+      })
+    );
+    const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const payload = JSON.parse(String(requestInit?.body || '{}'));
+    expect(payload).toMatchObject({
+      operation: 'preferred_tool_retry',
+      preferredToolId: 'createTicket',
+      preferredReason: 'strong semantic match'
+    });
+  });
+
   it('fails safely when the backend returns an error envelope', async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: false, error: 'Resolver unavailable.' }), {

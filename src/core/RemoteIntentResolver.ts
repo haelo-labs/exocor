@@ -4,6 +4,7 @@ import type {
   ExocorFollowUpRequest,
   ExocorInitialStreamRequest,
   ExocorNewElementsRequest,
+  ExocorPreferredToolRetryRequest,
   ExocorResolveRequest,
   ExocorResolverEnvelope,
   ExocorResolverJsonResponse,
@@ -159,6 +160,27 @@ export class RemoteIntentResolver {
     }
 
     return payload.data.plan;
+  }
+
+  async resolveWithPreferredToolRetry(
+    input: IntentResolutionInput,
+    preferredToolId: string,
+    preferredReason: string,
+    rejectedPlan: IntentPlan
+  ): Promise<IntentStep[]> {
+    const payload = await this.postJson<{ steps: IntentStep[] }>({
+      operation: 'preferred_tool_retry',
+      input,
+      preferredToolId,
+      preferredReason,
+      rejectedPlan
+    } satisfies ExocorPreferredToolRetryRequest);
+
+    if (!payload?.ok) {
+      return [];
+    }
+
+    return payload.data.steps || [];
   }
 
   async resolveForFailedStep(

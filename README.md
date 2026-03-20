@@ -39,15 +39,15 @@ Peer dependencies:
 Instead of clicking around, users can:
 
 - Look at a row and say: **"Open this"**
-- Say: **"Navigate to equipment"**
-- Say: **"Create ticket"**
+- Say: **"Navigate to reports"**
+- Say: **"Create record"**
 - Look at a field and say: **"Edit this"**
 
 And for more complex actions:
 
-- **"Create a ticket for this issue"**
+- **"Create a record for this issue"**
 - **"Show me last month"**
-- **"Navigate to equipment and filter for critical"**
+- **"Navigate to inventory and filter for critical"**
 
 ## Why this is different from browser agents
 
@@ -140,28 +140,28 @@ import { SpatialProvider, type ExocorToolDefinition } from 'exocor'
 
 const tools: ExocorToolDefinition[] = [
   {
-    id: 'refreshDashboard',
-    description: 'Refresh dashboard',
+    id: 'refreshWorkspace',
+    description: 'Refresh workspace',
     safety: 'read',
     handler: async () => {
-      await refreshDashboard()
+      await refreshWorkspace()
     }
   },
   {
-    id: 'createTicket',
-    description: 'Create ticket',
-    routes: ['/tickets'],
+    id: 'createRecord',
+    description: 'Create record',
+    routes: ['/records'],
     safety: 'write',
     parameters: [
       {
         name: 'title',
-        description: 'Ticket title',
+        description: 'Record title',
         type: 'string',
         required: true
       }
     ],
     handler: async ({ title }) => {
-      await createTicket({ title: String(title) })
+      await createRecord({ title: String(title) })
     }
   }
 ]
@@ -177,9 +177,9 @@ export default function App() {
 
 In that example:
 
-- `refreshDashboard` is global, so the planner can use it from anywhere.
-- `createTicket` belongs to `/tickets`, but the planner still knows it exists even if the user is currently elsewhere.
-- If the user is on `/dashboard`, Exocor can plan `navigate` to `/tickets` and then a `tool` step for `createTicket`.
+- `refreshWorkspace` is global, so the planner can use it from anywhere.
+- `createRecord` belongs to `/records`, but the planner still knows it exists even if the user is currently elsewhere.
+- If the user is on `/dashboard`, Exocor can plan `navigate` to `/records` and then a `tool` step for `createRecord`.
 
 ## What runs locally
 

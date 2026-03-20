@@ -54,6 +54,8 @@ import type {
   ResolutionStatus,
   ResolutionPriority,
   SpatialProviderProps,
+  ToolCapabilityEntry,
+  ToolCapabilityMap,
   VoiceState
 } from '../types';
 
@@ -65,6 +67,7 @@ const HISTORY_STORAGE_KEY = 'exocor.command-history.v1';
 const LEGACY_HISTORY_STORAGE_KEY = 'haelo.command-history.v1';
 const HISTORY_SESSION_STORAGE_KEY = LEGACY_HISTORY_STORAGE_KEY;
 type VoiceGazeSnapshot = GazeState;
+const DOM_RECONSTRUCTION_ACTIONS = new Set<IntentStep['action']>(['click', 'fill', 'submit', 'scroll']);
 
 interface PendingClarificationState {
   question: string;
@@ -427,6 +430,66 @@ function buildDirectToolPlan(command: string, toolId: string): IntentPlan {
       }
     ]
   };
+}
+
+function getPreferredToolEntries(toolCapabilityMap: ToolCapabilityMap | null): ToolCapabilityEntry[] {
+  if (!toolCapabilityMap?.preferredToolIds?.length) {
+    return [];
+  }
+
+  return toolCapabilityMap.tools.filter((tool) => toolCapabilityMap.preferredToolIds.includes(tool.id));
+}
+
+function getStrongPreferredTool(toolCapabilityMap: ToolCapabilityMap | null): ToolCapabilityEntry | null {
+  const preferredTools = getPreferredToolEntries(toolCapabilityMap);
+  return preferredTools.length === 1 ? preferredTools[0] : null;
+}
+
+function planUsesTool(plan: IntentPlan, toolId: string): boolean {
+  return plan.steps.some((step) => step.action === 'tool' && (step.toolId || step.target) === toolId);
+}
+
+function isNavigateThenToolPlan(plan: IntentPlan, toolId: string): boolean {
+  const steps = plan.steps.filter((step) => step.action !== 'wait');
+  const toolIndex = steps.findIndex((step) => step.action === 'tool' && (step.toolId || step.target) === toolId);
+  if (toolIndex <= 0) {
+    return false;
+  }
+
+  return steps.slice(0, toolIndex).some((step) => step.action === 'navigate' && step.target?.startsWith('/'));
+}
+
+function isEquivalentDomReconstructionPlan(plan: IntentPlan, preferredTool: ToolCapabilityEntry): boolean {
+  const actionableSteps = plan.steps.filter((step) => step.action !== 'wait');
+  if (!actionableSteps.length || actionableSteps.some((step) => step.action === 'tool')) {
+    return false;
+  }
+
+  const domActionSteps = actionableSteps.filter((step) => DOM_RECONSTRUCTION_ACTIONS.has(step.action));
+  const preferredRoutes = new Set(preferredTool.routes);
+  const navigateToPreferredRouteIndex = actionableSteps.findIndex(
+    (step) => step.action === 'navigate' && Boolean(step.target) && preferredRoutes.has(step.target as string)
+  );
+  const hasCreateEditPattern =
+    domActionSteps.some((step) => step.action === 'fill') &&
+    domActionSteps.some((step) => step.action === 'click' || step.action === 'submit');
+  const hasManualWorkflowAfterRouteNavigate =
+    navigateToPreferredRouteIndex >= 0 &&
+    actionableSteps.slice(navigateToPreferredRouteIndex + 1).some((step) => DOM_RECONSTRUCTION_ACTIONS.has(step.action));
+
+  if (domActionSteps.length >= 3) {
+    return true;
+  }
+
+  if (hasCreateEditPattern && (preferredTool.isGlobal || preferredTool.currentRouteMatches || navigateToPreferredRouteIndex >= 0)) {
+    return true;
+  }
+
+  if (!preferredTool.isGlobal && hasManualWorkflowAfterRouteNavigate) {
+    return true;
+  }
+
+  return false;
 }
 
 function toHistoryInputMethod(inputMethod: CommandInputMethod): CommandHistoryInputMethod {
@@ -1271,6 +1334,9 @@ export function SpatialProvider({
       const resolutionCommandForContext = activePendingClarification
         ? `${resolutionCommand}|||clarified|||`
         : resolutionCommand;
+      const semanticCommand = activePendingClarification
+        ? normalizeCommand(`${baseCommand} ${normalizedCommand}`)
+        : normalizedCommand;
       const historyEntryId =
         activePendingClarification?.historyEntryId || addCommandHistoryEntry(normalizedCommand, inputMethod);
       if (activePendingClarification) {
@@ -1282,8 +1348,14 @@ export function SpatialProvider({
 
       const buildToolCapabilityMap = (map: DOMCapabilityMap) =>
         toolRegistry.hasTools()
-          ? toolRegistry.buildCapabilityMap(normalizeToolRoutePath(map.currentRoute || window.location.pathname || '/'))
+          ? toolRegistry.buildCapabilityMap(
+              normalizeToolRoutePath(map.currentRoute || window.location.pathname || '/'),
+              semanticCommand
+            )
           : null;
+      const initialToolCapabilityMap = buildToolCapabilityMap(resolutionMap);
+      const preferredToolEntries = getPreferredToolEntries(initialToolCapabilityMap);
+      const strongPreferredTool = getStrongPreferredTool(initialToolCapabilityMap);
 
       const buildResolutionInput = (
         map: DOMCapabilityMap,
@@ -1338,6 +1410,16 @@ export function SpatialProvider({
         setProgressMessage('Planning workflow...');
         showToast('planning', 'Planning workflow...');
         appendCommandHistoryTrace(historyEntryId, 'Planning workflow');
+        if (!preferredToolEntries.length) {
+          appendCommandHistoryTrace(historyEntryId, 'No strong tool match; using normal planner behavior');
+        } else {
+          for (const preferredTool of preferredToolEntries) {
+            appendCommandHistoryTrace(historyEntryId, `Preferred tool candidate: ${preferredTool.id}`);
+            if (!preferredTool.currentRouteMatches && preferredTool.routes.length) {
+              appendCommandHistoryTrace(historyEntryId, `Preferred tool is off-route: ${preferredTool.routes.join(', ')}`);
+            }
+          }
+        }
         if (toolShortcutMatch?.type === 'planner_only') {
           appendCommandHistoryTrace(
             historyEntryId,
@@ -1351,6 +1433,7 @@ export function SpatialProvider({
       setDomMap(resolutionMap);
 
       let resolvedPlan: IntentPlan | null = null;
+      let planContextMap = resolutionMap;
       let resolutionPriority: ResolutionPriority = 'dom_only';
       let latestIntentSource: IntentAction['source'] = deterministicResolution ? 'deterministic' : 'claude';
       let initialExecutionResult = null as Awaited<ReturnType<ActionExecutor['executeSequence']>> | null;
@@ -1386,7 +1469,8 @@ export function SpatialProvider({
         }
       }
       if (!resolvedPlan && resolverRef.current) {
-        const useStreamExecution = inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution;
+        const useStreamExecution =
+          inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution && !strongPreferredTool;
         const streamSanitizer = createStreamingStepSanitizer(baseCommand);
         const streamedSteps: IntentStep[] = [];
         const streamQueueRef: { current: AsyncStepQueue | null } = { current: null };
@@ -1501,6 +1585,7 @@ export function SpatialProvider({
         appendCommandHistoryTrace(historyEntryId, 'Falling back to DOM-only resolution');
         const fallbackMap = refreshMapForExecution();
         const fallbackResolutionInput = buildResolutionInput(fallbackMap, resolutionCommand);
+        planContextMap = fallbackMap;
         resolutionPriority = 'dom_only';
         resolvedPlan = await resolverRef.current!.resolve(fallbackResolutionInput);
         if (resolvedPlan) {
@@ -1513,6 +1598,40 @@ export function SpatialProvider({
           };
         } // resolvedPlan
       } // fallback DOM-only resolution
+
+      if (
+        resolvedPlan &&
+        strongPreferredTool &&
+        resolverRef.current &&
+        !planUsesTool(resolvedPlan, strongPreferredTool.id) &&
+        isEquivalentDomReconstructionPlan(resolvedPlan, strongPreferredTool)
+      ) {
+        appendCommandHistoryTrace(historyEntryId, 'Planner ignored preferred tool; retrying with stronger preference');
+        setProgressMessage('Retrying with stronger tool preference...');
+        showToast('planning', 'Retrying with stronger tool preference...');
+
+        const retrySteps = await resolverRef.current.resolveWithPreferredToolRetry(
+          buildResolutionInput(planContextMap, resolutionCommand),
+          strongPreferredTool.id,
+          strongPreferredTool.preferredReason || 'strong semantic match',
+          resolvedPlan
+        );
+
+        if (retrySteps.length) {
+          const retriedPlan: IntentPlan = {
+            ...resolvedPlan,
+            steps: sanitizePlanStepsForUnrequestedPostSubmitNavigation(retrySteps, baseCommand)
+          };
+
+          if (planUsesTool(retriedPlan, strongPreferredTool.id)) {
+            resolvedPlan = retriedPlan;
+          }
+        }
+
+        if (resolvedPlan && !planUsesTool(resolvedPlan, strongPreferredTool.id)) {
+          appendCommandHistoryTrace(historyEntryId, 'Planner ignored preferred tool; falling back to DOM plan');
+        }
+      }
 
       if (!resolvedPlan || !resolvedPlan.steps.length) {
         setIsResolving(false);
@@ -1529,6 +1648,14 @@ export function SpatialProvider({
         }
 
         return false;
+      }
+
+      if (strongPreferredTool && planUsesTool(resolvedPlan, strongPreferredTool.id)) {
+        if (isNavigateThenToolPlan(resolvedPlan, strongPreferredTool.id)) {
+          appendCommandHistoryTrace(historyEntryId, `Planner used navigate -> tool: ${strongPreferredTool.id}`);
+        } else {
+          appendCommandHistoryTrace(historyEntryId, `Planner used preferred tool directly: ${strongPreferredTool.id}`);
+        }
       }
 
       const allowDynamicReplan = resolutionPriority !== 'app_map_only';

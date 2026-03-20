@@ -47,7 +47,7 @@ interface StreamResolveCallbacks {
 const CLAUDE_SYSTEM_PROMPT = `You are an intent resolver. Given app context and user intent return a JSON array of steps to complete the task fully. Be concise.
 App context: {compressed capability map with element IDs}
 Runtime state: {current route/url, open dialogs, visible form fields, visible buttons}
-Explicit tools: {registered global and route-specific app-native tools}
+Explicit tools: {registered global and route-specific app-native tools, including preferred tools for this command when available}
 User intent: {voice or typed command}
 Current page: {route}
 Gaze target: {element ID user is looking at or null}
@@ -58,16 +58,21 @@ Return only valid JSON array:
 Rules:
 
 Use element IDs from context for targets
+If toolCapabilityMap.preferredToolIds is non-empty, treat those preferred tools as the first semantic path for this command
+If a preferred tool fully covers the task, use it instead of reconstructing the same workflow with DOM/app-map steps
 Prefer a registered tool when the tool is clearly a better fit than DOM/app-map inference
 Never invent tool ids
 Only use declared tool parameter names
 Global tools can be used from any route
-Route-specific tools remain available even when current route differs; if currentRouteMatches is false and requiresNavigation is true, plan navigate first and then the tool
+Route-specific tools remain available even when current route differs; if a preferred route-specific tool has currentRouteMatches=false and requiresNavigation=true, plan navigate first and then the tool
 Destructive tools should only be used for explicit destructive intent
 If no tool fits, continue with app-map and DOM planning
 Elements marked as fillable: input, textarea, select, contenteditable. Only use fill action on elements explicitly marked as fillable:true in the context. Never use fill action on buttons, divs without contenteditable, or links.
 Complete full workflow end to end
-Always complete the FULL workflow end to end. Never stop at an intermediate state like an open modal or dialog. If your intent is to CREATE something you must: find the create button, click it, wait for form, fill ALL required fields, and submit the form. Stopping at an open modal is not success. Submitting an empty form is not success. Complete the entire task.
+Always complete the FULL workflow end to end. Never stop at an intermediate state like an open modal or dialog.
+Only when no preferred tool applies, CREATE or EDIT workflows should be completed with the full DOM or app-map path: find the create button, click it, wait for form, fill required fields, and submit.
+Example on-route preferred tool: [{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
+Example off-route preferred tool: [{"action":"navigate","target":"/records","value":null,"waitForDOM":true,"reason":"navigate to records first"},{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
 waitForDOM true after clicks that open modals or change page
 Add wait 300ms between DOM-changing actions
 Do not add navigation for confirmation after submit/create unless the user explicitly requested navigation
@@ -425,6 +430,26 @@ type ResolverPromptContext = Omit<CompressedCapabilityMap, 'selectorMap'> & {
   runtimeState: RuntimeStateSnapshot;
   toolCapabilityMap?: IntentResolutionInput['toolCapabilityMap'];
 };
+
+function buildPreferredToolPromptValue(
+  toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
+): string {
+  if (!toolCapabilityMap?.preferredToolIds?.length) {
+    return 'none';
+  }
+
+  return JSON.stringify(
+    toolCapabilityMap.tools
+      .filter((tool) => toolCapabilityMap.preferredToolIds.includes(tool.id))
+      .map((tool) => ({
+        id: tool.id,
+        semanticScore: tool.semanticScore,
+        currentRouteMatches: tool.currentRouteMatches,
+        requiresNavigation: tool.requiresNavigation,
+        preferredReason: tool.preferredReason || ''
+      }))
+  );
+}
 
 function toNewElementContext(elements: DOMElementDescriptor[]): Array<{
   id: string;
@@ -845,6 +870,7 @@ If needsClarification=false: question must be empty string.`;
       `Current page: ${compressed.currentRoute}`,
       `Gaze target: ${compressed.gazeTargetId || 'null'}`,
       `App context: ${JSON.stringify(contextForClaude)}`,
+      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
       `Completed steps so far: ${JSON.stringify(completedSteps.slice(0, 12))}`,
       `These new elements appeared: ${JSON.stringify(newElementsContext)}`,
       `These new elements appeared. What additional steps are needed to complete the original intent of: ${command}? Return only remaining JSON steps.`
@@ -878,6 +904,7 @@ If needsClarification=false: question must be empty string.`;
       `Steps already completed: ${JSON.stringify(completedStepLabels.slice(-20))}`,
       `Current page: ${compressed.currentRoute}`,
       `App context: ${JSON.stringify(contextForClaude)}`,
+      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
       `Instruction: ${instruction}`,
       'Return remaining steps only as valid JSON array. Return [] if complete.'
     ].join('\n\n');
@@ -939,14 +966,14 @@ If needsClarification=false: question must be empty string.`;
 Never show your reasoning. Never show multiple versions.
 Never use element IDs as targets. Never use CSS selectors as targets.
 For click/fill/submit/scroll actions, target MUST be an app-map label string.
-Only navigate actions may target route paths (e.g. "/tickets").
+Only navigate actions may target route paths (e.g. "/records").
 Tool actions must use toolId and args.
 
 You are an intelligent assistant embedded in a web application. Understand the user's goal and complete it fully in one plan.
 
 You have:
 - appMap: complete app structure — all routes, buttons, tabs, modals, and form fields discovered in advance
-- toolCapabilityMap: explicit app-native tools, including global tools and route-specific tools across the whole app
+- toolCapabilityMap: explicit app-native tools, including global tools, route-specific tools, and preferred tools for this command
 - runtimeState: current route/url + currently open dialogs + visible form fields + visible buttons
 - runtimeContext: SDK-derived metadata such as input method, gaze target/position, focused element, and selected text
 - Runtime executor: resolves label targets to live DOM elements at execution time
@@ -959,18 +986,22 @@ HOW TO USE appMap:
 - appMap tells you what exists on each page: routes, buttons, tabs, modals, and form fields with their labels
 - Use appMap labels directly as action targets
 - Plan across page navigations using labels on destination pages
-- Example: navigate "/tickets" → click "New Ticket" → fill "title" → click "Create"
+- Example: navigate "/records" → click "New Record" → fill "Title" → click "Create"
 
 HOW TO USE toolCapabilityMap:
+- preferredToolIds and preferredForCommand identify the strongest semantic tool matches for this command
+- If one preferred tool fully covers the task, use it instead of reconstructing the same task with DOM/app-map steps
 - Prefer a registered tool when the tool is clearly a better fit than pure DOM or app-map inference
 - Never invent tool ids
 - Never invent argument names
 - Only use declared parameter names
 - Global tools can be used from any route
 - Route-specific tools remain available even when the current route is different
-- If a route-specific tool has currentRouteMatches=false and requiresNavigation=true, it is valid and expected to plan navigate first and then the tool
+- If a preferred route-specific tool has currentRouteMatches=false and requiresNavigation=true, it is valid and expected to plan navigate first and then the tool
 - If no tool is appropriate, continue with app-map and DOM planning
 - Destructive tools should only be used for explicit destructive intent
+- Example on-route preferred tool: [{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
+- Example off-route preferred tool: [{"action":"navigate","target":"/records","value":null,"waitForDOM":true,"reason":"navigate to records first"},{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
 
 NAVIGATION:
 - Plan the full workflow upfront using appMap knowledge
@@ -986,11 +1017,12 @@ FORMS:
 - Never re-fill a field already filled in completed steps
 - If runtimeState shows an open modal/dialog and user asks to fill/edit/select/submit, operate in that open modal/dialog in place
 - Do not navigate away or reopen a creation flow unless the user explicitly requested navigation/new flow
+- Only when no preferred tool applies should you reconstruct create/edit flows with click/fill/submit DOM steps
 
 GAZE:
 - Gaze context (gazeTarget) is provided for voice commands and indicates where the user was looking when they started speaking
 - Use gaze context only when it is semantically relevant to the command, such as 'this', 'that', 'here', 'it', or another on-screen reference without an explicit name
-- If the command is self-contained and unambiguous without gaze context (for example 'create a new ticket', 'navigate to reports', 'filter by critical priority'), ignore gazeTarget and resolve from the command alone
+- If the command is self-contained and unambiguous without gaze context (for example 'create a new record', 'navigate to reports', 'filter by critical priority'), ignore gazeTarget and resolve from the command alone
 - When gaze context is relevant, map it to the closest app-map label target
 
 Complete the full task end to end. Never stop halfway.`;
@@ -999,6 +1031,7 @@ Complete the full task end to end. Never stop halfway.`;
       `Resolution priority: ${priorityDecision.priority} (${priorityDecision.reason})`,
       `Runtime context: ${runtimeContext ? JSON.stringify(runtimeContext) : 'none'}`,
       `DOM context: ${JSON.stringify(contextForClaude)}`,
+      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
       `Current page: ${compressed.currentRoute}`,
       `Gaze target: ${compressed.gazeTargetId || 'none'}`,
       `Input method: ${contextInputMethod}`
@@ -1095,19 +1128,60 @@ Complete the full task end to end. Never stop halfway.`;
           `Failed step: ${JSON.stringify(failureContext.failedStep)}`,
           `Failure reason: ${failureContext.failureReason}`,
           `App context: ${JSON.stringify(contextForClaude)}`,
+          `Preferred tools for this command: ${buildPreferredToolPromptValue(toolCapabilityMap)}`,
           'Provide corrected remaining steps only.'
         ].join('\n\n')
       : [
           `User intent: ${command}`,
           `Current page: ${compressedMap.currentRoute}`,
           `Gaze target: ${compressedMap.gazeTargetId || 'null'}`,
-          `App context: ${JSON.stringify(contextForClaude)}`
+          `App context: ${JSON.stringify(contextForClaude)}`,
+          `Preferred tools for this command: ${buildPreferredToolPromptValue(toolCapabilityMap)}`
         ].join('\n\n');
 
     return this.callClaude(userPrompt);
   }
 
-  private async callClaude(userPrompt: string): Promise<IntentStep[]> {
+  async resolveWithPreferredToolRetry(
+    input: IntentResolutionInput,
+    preferredToolId: string,
+    preferredReason: string,
+    rejectedPlan: IntentPlan
+  ): Promise<IntentStep[]> {
+    const command = normalize(input.command);
+    if (!command || !this.client) {
+      return [];
+    }
+
+    const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
+    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
+    const preferredTool = input.toolCapabilityMap?.tools.find((tool) => tool.id === preferredToolId) || null;
+
+    const retrySystemPrompt = `${CLAUDE_SYSTEM_PROMPT}
+
+PREFERRED TOOL CORRECTION:
+- The previous plan ignored a strong preferred tool for this command.
+- Preferred tool: ${preferredToolId}
+- If this preferred tool can satisfy the task, you MUST use it instead of reconstructing the same workflow with DOM/app-map steps.
+- If the preferred tool is route-specific and off-route, you MUST plan navigate first and then the tool.
+- Only keep a DOM/app-map workflow if the preferred tool truly cannot satisfy the user's intent.`;
+
+    const userPrompt = [
+      `User intent: ${command}`,
+      `Current page: ${compressed.currentRoute}`,
+      `Preferred tool: ${preferredToolId}`,
+      `Preferred tool reasoning: ${preferredReason || preferredTool?.preferredReason || 'strong semantic match'}`,
+      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
+      `Previous plan to replace: ${JSON.stringify(rejectedPlan.steps)}`,
+      `App context: ${JSON.stringify(contextForClaude)}`,
+      'Replan once. Use the preferred tool if it can satisfy the task. Return corrected steps only as valid JSON.'
+    ].join('\n\n');
+
+    return this.callClaude(userPrompt, retrySystemPrompt);
+  }
+
+  private async callClaude(userPrompt: string, systemPrompt = CLAUDE_SYSTEM_PROMPT): Promise<IntentStep[]> {
     if (!this.client) {
       return [];
     }
@@ -1117,7 +1191,7 @@ Complete the full task end to end. Never stop halfway.`;
         model: 'claude-haiku-4-5-20251001',
         temperature: 0,
         max_tokens: 800,
-        system: CLAUDE_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }]
       });
 

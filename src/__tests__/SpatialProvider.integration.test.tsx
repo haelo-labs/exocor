@@ -12,6 +12,7 @@ let speechStopSpy: ReturnType<typeof vi.fn>;
 let speechRestartSpy: ReturnType<typeof vi.fn>;
 let resolveSpy: ReturnType<typeof vi.fn>;
 let resolveStreamSpy: ReturnType<typeof vi.fn>;
+let resolvePreferredToolRetrySpy: ReturnType<typeof vi.fn>;
 let resolveForFailedStepSpy: ReturnType<typeof vi.fn>;
 let resolveForNewElementsSpy: ReturnType<typeof vi.fn>;
 
@@ -199,6 +200,10 @@ vi.mock('../core/RemoteIntentResolver', () => ({
 
     async resolveAdditionalSteps() {
       return [];
+    }
+
+    async resolveWithPreferredToolRetry(...args: any[]) {
+      return resolvePreferredToolRetrySpy(...args);
     }
 
     async resolveForFailedStep(...args: any[]) {
@@ -708,6 +713,7 @@ describe('SpatialProvider integration', () => {
       plan: buildPlan(input.command),
       resolutionPriority: 'dom_only'
     }));
+    resolvePreferredToolRetrySpy = vi.fn(async () => []);
     resolveForFailedStepSpy = vi.fn(async () => []);
     resolveForNewElementsSpy = vi.fn(async () => []);
   });
@@ -1861,6 +1867,243 @@ describe('SpatialProvider integration', () => {
     });
 
     expect(resolveStreamSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries once with stronger preference when a strong off-route tool is replaced by a long DOM reconstruction', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    const createTicketHandler = vi.fn().mockResolvedValue(undefined);
+    const historyKey = getScopedHistoryKey();
+
+    resolveStreamSpy.mockImplementationOnce(async (input: { toolCapabilityMap?: any }) => {
+      expect(input.toolCapabilityMap?.preferredToolIds).toEqual(['createTicket']);
+      expect(input.toolCapabilityMap?.tools[0]).toMatchObject({
+        id: 'createTicket',
+        preferredForCommand: true,
+        currentRouteMatches: false,
+        requiresNavigation: true
+      });
+
+      return {
+        type: 'dom_steps',
+        plan: {
+          source: 'claude',
+          rawCommand: 'create a ticket called Pump Failure',
+          confidence: 0.9,
+          steps: [
+            {
+              action: 'navigate',
+              target: '/tickets',
+              value: null,
+              waitForDOM: true,
+              reason: 'navigate to tickets'
+            },
+            {
+              action: 'click',
+              target: 'New Ticket',
+              value: null,
+              waitForDOM: true,
+              reason: 'open new ticket modal'
+            },
+            {
+              action: 'fill',
+              target: 'Title',
+              value: 'Pump Failure',
+              waitForDOM: false,
+              reason: 'fill ticket title'
+            },
+            {
+              action: 'click',
+              target: 'Create',
+              value: null,
+              waitForDOM: true,
+              reason: 'submit ticket'
+            }
+          ]
+        },
+        resolutionPriority: 'app_map_only'
+      };
+    });
+    resolvePreferredToolRetrySpy.mockResolvedValueOnce([
+      {
+        action: 'navigate',
+        target: '/tickets',
+        value: null,
+        waitForDOM: true,
+        reason: 'navigate to tickets first'
+      },
+      {
+        action: 'tool',
+        toolId: 'createTicket',
+        args: { title: 'Pump Failure' },
+        reason: 'use preferred app-native tool'
+      }
+    ]);
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'createTicket',
+            description: 'Create ticket',
+            routes: ['/tickets'],
+            parameters: [
+              {
+                name: 'title',
+                description: 'Ticket title',
+                type: 'string',
+                required: true
+              }
+            ],
+            handler: createTicketHandler
+          }
+        ]}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('create a ticket called Pump Failure');
+    await advanceUntil(() => {
+      expect(screen.getByTestId('tool-current-path').textContent).toBe('/tickets');
+      expect(createTicketHandler).toHaveBeenCalledWith({ title: 'Pump Failure' });
+    });
+
+    expect(resolveStreamSpy).toHaveBeenCalledTimes(1);
+    expect(resolvePreferredToolRetrySpy).toHaveBeenCalledTimes(1);
+    const rawHistory = window.localStorage.getItem(historyKey) || '';
+    expect(rawHistory).toContain('Preferred tool candidate: createTicket');
+    expect(rawHistory).toContain('Preferred tool is off-route: /tickets');
+    expect(rawHistory).toContain('Planner ignored preferred tool; retrying with stronger preference');
+    expect(rawHistory).toContain('Planner used navigate -> tool: createTicket');
+  });
+
+  it('falls back to the original DOM plan after one retry when the preferred tool is still ignored', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    resolveStreamSpy.mockResolvedValueOnce({
+      type: 'dom_steps',
+      plan: {
+        source: 'claude',
+        rawCommand: 'create a ticket called Pump Failure',
+        confidence: 0.9,
+        steps: [
+          {
+            action: 'navigate',
+            target: '/tickets',
+            value: null,
+            waitForDOM: true,
+            reason: 'navigate to tickets'
+          },
+          {
+            action: 'click',
+            target: 'New Ticket',
+            value: null,
+            waitForDOM: true,
+            reason: 'open new ticket modal'
+          },
+          {
+            action: 'fill',
+            target: 'Title',
+            value: 'Pump Failure',
+            waitForDOM: false,
+            reason: 'fill ticket title'
+          },
+          {
+            action: 'click',
+            target: 'Create',
+            value: null,
+            waitForDOM: true,
+            reason: 'submit ticket'
+          }
+        ]
+      },
+      resolutionPriority: 'dom_only'
+    });
+    resolvePreferredToolRetrySpy.mockResolvedValueOnce([
+      {
+        action: 'navigate',
+        target: '/tickets',
+        value: null,
+        waitForDOM: true,
+        reason: 'navigate to tickets'
+      },
+      {
+        action: 'click',
+        target: 'New Ticket',
+        value: null,
+        waitForDOM: true,
+        reason: 'open new ticket modal'
+      }
+    ]);
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'createTicket',
+            description: 'Create ticket',
+            routes: ['/tickets'],
+            parameters: [
+              {
+                name: 'title',
+                description: 'Ticket title',
+                type: 'string',
+                required: true
+              }
+            ],
+            handler: vi.fn().mockResolvedValue(undefined)
+          }
+        ]}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('create a ticket called Pump Failure');
+    await advance(2000);
+
+    expect(resolvePreferredToolRetrySpy).toHaveBeenCalledTimes(1);
+    const rawHistory = window.localStorage.getItem(getScopedHistoryKey()) || '';
+    expect(rawHistory).toContain('Planner ignored preferred tool; falling back to DOM plan');
+  });
+
+  it('records that no strong tool match existed when tools are present but the command is unrelated', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    resolveStreamSpy.mockResolvedValueOnce({
+      type: 'text_response',
+      text: 'Looking up ticket details'
+    });
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'createTicket',
+            description: 'Create ticket',
+            routes: ['/tickets'],
+            parameters: [
+              {
+                name: 'title',
+                description: 'Ticket title',
+                type: 'string',
+                required: true
+              }
+            ],
+            handler: vi.fn().mockResolvedValue(undefined)
+          }
+        ]}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('show me details of ticket 4');
+    await advance(1000);
+
+    const rawHistory = window.localStorage.getItem(getScopedHistoryKey()) || '';
+    expect(rawHistory).toContain('No strong tool match; using normal planner behavior');
   });
 
   it('replans cleanly after a route-mismatched tool step', async () => {

@@ -93,6 +93,94 @@ describe('ToolRegistry', () => {
     });
     expect(capabilityMap.tools[0]).not.toHaveProperty('handler');
     expect(capabilityMap.tools[1]).not.toHaveProperty('handler');
+    expect(capabilityMap.preferredToolIds).toEqual([]);
+  });
+
+  it('prefers a single strongest semantic tool for the command by default', () => {
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        routes: ['/tickets'],
+        handler: () => undefined
+      },
+      {
+        id: 'openTicket',
+        description: 'Open ticket details',
+        routes: ['/tickets'],
+        handler: () => undefined
+      }
+    ]);
+
+    const capabilityMap = registry.buildCapabilityMap('/dashboard', 'create a ticket called Pump Failure');
+    expect(capabilityMap.preferredToolIds).toEqual(['createTicket']);
+    expect(capabilityMap.tools[0]).toMatchObject({
+      id: 'createTicket',
+      preferredForCommand: true,
+      requiresNavigation: true
+    });
+    expect(capabilityMap.tools[0].semanticScore).toBeGreaterThan(capabilityMap.tools[1].semanticScore);
+  });
+
+  it('keeps two preferred tools only when there is real ambiguity', () => {
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Manage ticket',
+        routes: ['/tickets'],
+        handler: () => undefined
+      },
+      {
+        id: 'deleteTicket',
+        description: 'Manage ticket',
+        routes: ['/tickets'],
+        handler: () => undefined
+      }
+    ]);
+
+    const capabilityMap = registry.buildCapabilityMap('/tickets', 'manage ticket');
+    expect(capabilityMap.preferredToolIds).toEqual(['createTicket', 'deleteTicket']);
+    expect(capabilityMap.tools.filter((tool) => tool.preferredForCommand)).toHaveLength(2);
+  });
+
+  it('does not emit preferred tools when the command is too generic or unrelated', () => {
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        routes: ['/tickets'],
+        handler: () => undefined
+      }
+    ]);
+
+    expect(registry.buildCapabilityMap('/dashboard', 'please help').preferredToolIds).toEqual([]);
+    expect(registry.buildCapabilityMap('/dashboard', 'open page').preferredToolIds).toEqual([]);
+    expect(registry.buildCapabilityMap('/dashboard', 'show me details of ticket 4').preferredToolIds).toEqual([]);
+  });
+
+  it('can strongly prefer an off-route route-specific tool when it is the best semantic match', () => {
+    const registry = createToolRegistry([
+      {
+        id: 'createTicket',
+        description: 'Create ticket',
+        routes: ['/tickets'],
+        handler: () => undefined
+      },
+      {
+        id: 'refreshDashboard',
+        description: 'Refresh dashboard',
+        handler: () => undefined
+      }
+    ]);
+
+    const capabilityMap = registry.buildCapabilityMap('/dashboard', 'create a ticket');
+    expect(capabilityMap.preferredToolIds).toEqual(['createTicket']);
+    expect(capabilityMap.tools[0]).toMatchObject({
+      id: 'createTicket',
+      preferredForCommand: true,
+      currentRouteMatches: false,
+      requiresNavigation: true
+    });
   });
 
   it('auto-runs exact global no-parameter tool matches only', () => {

@@ -10,6 +10,67 @@ import type {
 
 const DEFAULT_TOOL_SAFETY: ExocorToolSafety = 'write';
 const VALID_PARAMETER_TYPES = new Set<ExocorToolParameterType>(['string', 'number', 'boolean', 'enum']);
+const SEMANTIC_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'any',
+  'for',
+  'from',
+  'in',
+  'into',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'please',
+  'some',
+  'that',
+  'the',
+  'this',
+  'to',
+  'with',
+  'you',
+  'your'
+]);
+const LOW_SIGNAL_ACTION_TOKENS = new Set([
+  'add',
+  'click',
+  'create',
+  'delete',
+  'edit',
+  'go',
+  'new',
+  'open',
+  'page',
+  'press',
+  'remove',
+  'save',
+  'screen',
+  'select',
+  'show',
+  'submit',
+  'tool',
+  'update',
+  'view'
+]);
+const STRONG_TOOL_SCORE_THRESHOLD = 3;
+const SINGLE_TOOL_MARGIN = 1.5;
+const AMBIGUOUS_TOOL_MARGIN = 0.75;
+
+interface SemanticToken {
+  token: string;
+  lowSignal: boolean;
+}
+
+interface ToolPreferenceResult {
+  semanticScore: number;
+  directMatchCount: number;
+  hasPhraseMatch: boolean;
+  preferredReason?: string;
+}
 
 interface RegisteredTool extends ExocorToolMetadata {
   id: string;
@@ -21,6 +82,12 @@ interface RegisteredTool extends ExocorToolMetadata {
   handler: ExocorToolDefinition['handler'];
   idMatchKey: string;
   descriptionMatchKey: string;
+  idPhrase: string;
+  descriptionPhrase: string;
+  idTokens: SemanticToken[];
+  descriptionTokens: SemanticToken[];
+  routeTokens: SemanticToken[];
+  parameterTokens: SemanticToken[];
   requiredParameterNames: string[];
 }
 
@@ -53,7 +120,7 @@ export interface ToolRegistry {
   readonly tools: RegisteredTool[];
   hasTools: () => boolean;
   getTool: (toolId: string) => RegisteredTool | null;
-  buildCapabilityMap: (currentRoute: string) => ToolCapabilityMap;
+  buildCapabilityMap: (currentRoute: string, command?: string) => ToolCapabilityMap;
   resolveDirectToolShortcut: (command: string, currentRoute: string) => DirectToolShortcutMatch | null;
   validateArgs: (toolId: string, args: unknown) => ToolArgsValidationResult;
 }
@@ -64,6 +131,60 @@ function normalizeWhitespace(value: string): string {
 
 function normalizeMatchValue(value: string): string {
   return normalizeWhitespace(value).toLowerCase();
+}
+
+function toSemanticSource(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_/.-]+/g, ' ')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ');
+}
+
+function singularizeToken(token: string): string {
+  if (token.length <= 3 || token.endsWith('ss')) {
+    return token;
+  }
+
+  if (token.endsWith('ies') && token.length > 4) {
+    return `${token.slice(0, -3)}y`;
+  }
+
+  if (token.endsWith('s')) {
+    return token.slice(0, -1);
+  }
+
+  return token;
+}
+
+function toSemanticTokens(value: string): SemanticToken[] {
+  const rawTokens = toSemanticSource(value)
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => singularizeToken(token))
+    .filter((token) => token.length > 1 && !SEMANTIC_STOP_WORDS.has(token));
+
+  const seen = new Set<string>();
+  const tokens: SemanticToken[] = [];
+  for (const token of rawTokens) {
+    if (seen.has(token)) {
+      continue;
+    }
+    seen.add(token);
+    tokens.push({
+      token,
+      lowSignal: LOW_SIGNAL_ACTION_TOKENS.has(token)
+    });
+  }
+  return tokens;
+}
+
+function toSemanticPhrase(value: string): string {
+  return toSemanticTokens(value)
+    .map((token) => token.token)
+    .join(' ')
+    .trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -153,6 +274,11 @@ function normalizeToolDefinition(definition: ExocorToolDefinition, index: number
     : [];
   const uniqueRoutes = routes.filter((route, routeIndex) => routes.indexOf(route) === routeIndex);
   const safety = definition.safety || DEFAULT_TOOL_SAFETY;
+  const routeTokens = uniqueRoutes.flatMap((route) => toSemanticTokens(route));
+  const parameterTokens = parameters.flatMap((parameter) => [
+    ...toSemanticTokens(parameter.name),
+    ...toSemanticTokens(parameter.description)
+  ]);
 
   return {
     id,
@@ -164,6 +290,12 @@ function normalizeToolDefinition(definition: ExocorToolDefinition, index: number
     handler: definition.handler,
     idMatchKey: normalizeMatchValue(id),
     descriptionMatchKey: normalizeMatchValue(description),
+    idPhrase: toSemanticPhrase(id),
+    descriptionPhrase: toSemanticPhrase(description),
+    idTokens: toSemanticTokens(id),
+    descriptionTokens: toSemanticTokens(description),
+    routeTokens,
+    parameterTokens,
     requiredParameterNames: parameters.filter((parameter) => parameter.required).map((parameter) => parameter.name)
   };
 }
@@ -177,7 +309,128 @@ export function toolMatchesCurrentRoute(tool: Pick<RegisteredTool, 'isGlobal' | 
   return tool.routes.some((route) => route === normalizedCurrentRoute);
 }
 
-function toPlannerEntry(tool: RegisteredTool, currentRoute: string): ToolCapabilityEntry {
+function scoreTokenOverlap(
+  commandTokens: SemanticToken[],
+  toolTokens: SemanticToken[],
+  strongWeight: number,
+  lowSignalWeight: number
+): { score: number; matchedTokens: string[] } {
+  const toolTokenMap = new Map(toolTokens.map((token) => [token.token, token]));
+  const matchedTokens: string[] = [];
+  let score = 0;
+
+  for (const commandToken of commandTokens) {
+    const match = toolTokenMap.get(commandToken.token);
+    if (!match) {
+      continue;
+    }
+
+    matchedTokens.push(match.token);
+    const useLowSignalWeight = commandToken.lowSignal || match.lowSignal;
+    score += useLowSignalWeight ? lowSignalWeight : strongWeight;
+  }
+
+  return { score, matchedTokens };
+}
+
+function scoreToolForCommand(tool: RegisteredTool, command: string): ToolPreferenceResult {
+  const semanticCommand = toSemanticPhrase(command);
+  const commandTokens = toSemanticTokens(command);
+  if (!semanticCommand || !commandTokens.length) {
+    return { semanticScore: 0, directMatchCount: 0, hasPhraseMatch: false };
+  }
+
+  let semanticScore = 0;
+  let hasPhraseMatch = false;
+  const reasonParts: string[] = [];
+  const matchedReasonTokens = new Set<string>();
+
+  if (tool.descriptionPhrase && semanticCommand.includes(tool.descriptionPhrase)) {
+    hasPhraseMatch = true;
+    semanticScore += tool.descriptionPhrase.split(' ').length > 1 ? 4 : 2.5;
+    reasonParts.push(`description phrase match: ${tool.descriptionPhrase}`);
+  }
+
+  if (tool.idPhrase && semanticCommand.includes(tool.idPhrase)) {
+    hasPhraseMatch = true;
+    semanticScore += tool.idPhrase.split(' ').length > 1 ? 3.5 : 2;
+    reasonParts.push(`tool id phrase match: ${tool.idPhrase}`);
+  }
+
+  const descriptionScore = scoreTokenOverlap(commandTokens, tool.descriptionTokens, 2.2, 0.6);
+  const idScore = scoreTokenOverlap(commandTokens, tool.idTokens, 1.8, 0.5);
+  const routeScore = scoreTokenOverlap(commandTokens, tool.routeTokens, 1.1, 0.25);
+  const parameterScore = scoreTokenOverlap(commandTokens, tool.parameterTokens, 0.75, 0.2);
+
+  semanticScore += descriptionScore.score + idScore.score + routeScore.score + parameterScore.score;
+
+  for (const token of [...descriptionScore.matchedTokens, ...idScore.matchedTokens]) {
+    matchedReasonTokens.add(token);
+  }
+
+  const matchedRouteTokens = routeScore.matchedTokens.filter((token, index, tokens) => tokens.indexOf(token) === index);
+  if (matchedReasonTokens.size > 0) {
+    reasonParts.push(`matched terms: ${Array.from(matchedReasonTokens).join(', ')}`);
+  }
+  if (matchedRouteTokens.length > 0) {
+    reasonParts.push(`route terms: ${matchedRouteTokens.join(', ')}`);
+  }
+
+  const directMatchCount = matchedReasonTokens.size;
+
+  return {
+    semanticScore: Number(semanticScore.toFixed(2)),
+    directMatchCount,
+    hasPhraseMatch,
+    ...(reasonParts.length ? { preferredReason: reasonParts.join('; ') } : {})
+  };
+}
+
+function selectPreferredToolIds(
+  scoredTools: Array<{
+    tool: RegisteredTool;
+    semanticScore: number;
+    directMatchCount: number;
+    hasPhraseMatch: boolean;
+  }>
+): string[] {
+  if (!scoredTools.length) {
+    return [];
+  }
+
+  const qualifiesAsStrongSemanticMatch = (entry: {
+    semanticScore: number;
+    directMatchCount: number;
+    hasPhraseMatch: boolean;
+  }): boolean =>
+    entry.semanticScore >= STRONG_TOOL_SCORE_THRESHOLD && (entry.hasPhraseMatch || entry.directMatchCount >= 2);
+
+  const [top, second] = scoredTools;
+  if (!top || !qualifiesAsStrongSemanticMatch(top)) {
+    return [];
+  }
+
+  if (!second || !qualifiesAsStrongSemanticMatch(second)) {
+    return [top.tool.id];
+  }
+
+  if (top.semanticScore - second.semanticScore >= SINGLE_TOOL_MARGIN) {
+    return [top.tool.id];
+  }
+
+  if (top.semanticScore - second.semanticScore <= AMBIGUOUS_TOOL_MARGIN) {
+    return [top.tool.id, second.tool.id];
+  }
+
+  return [top.tool.id];
+}
+
+function toPlannerEntry(
+  tool: RegisteredTool,
+  currentRoute: string,
+  preference: ToolPreferenceResult,
+  preferredToolIds: string[]
+): ToolCapabilityEntry {
   const currentRouteMatches = toolMatchesCurrentRoute(tool, currentRoute);
   return {
     id: tool.id,
@@ -187,7 +440,10 @@ function toPlannerEntry(tool: RegisteredTool, currentRoute: string): ToolCapabil
     safety: tool.safety,
     isGlobal: tool.isGlobal,
     currentRouteMatches,
-    requiresNavigation: !tool.isGlobal && !currentRouteMatches
+    requiresNavigation: !tool.isGlobal && !currentRouteMatches,
+    semanticScore: preference.semanticScore,
+    preferredForCommand: preferredToolIds.includes(tool.id),
+    ...(preference.preferredReason ? { preferredReason: preference.preferredReason } : {})
   };
 }
 
@@ -242,11 +498,51 @@ export function createToolRegistry(definitions: ExocorToolDefinition[] = []): To
     tools,
     hasTools: (): boolean => tools.length > 0,
     getTool: (toolId: string): RegisteredTool | null => toolLookup.get(normalizeMatchValue(toolId || '')) || null,
-    buildCapabilityMap: (currentRoute: string): ToolCapabilityMap => {
+    buildCapabilityMap: (currentRoute: string, command = ''): ToolCapabilityMap => {
       const normalizedCurrentRoute = normalizeToolRoutePath(currentRoute || '/');
+      const scoredTools = tools
+        .map((tool) => ({
+          tool,
+          ...scoreToolForCommand(tool, command)
+        }))
+        .sort((left, right) => right.semanticScore - left.semanticScore || left.tool.id.localeCompare(right.tool.id));
+      const preferredToolIds = selectPreferredToolIds(scoredTools);
+      const preferenceById = new Map(scoredTools.map((entry) => [entry.tool.id, entry] as const));
+      const orderedTools = [...tools].sort((left, right) => {
+        const leftPreference = preferenceById.get(left.id);
+        const rightPreference = preferenceById.get(right.id);
+        const leftPreferred = preferredToolIds.includes(left.id) ? 1 : 0;
+        const rightPreferred = preferredToolIds.includes(right.id) ? 1 : 0;
+        if (leftPreferred !== rightPreferred) {
+          return rightPreferred - leftPreferred;
+        }
+
+        const leftRouteMatch = toolMatchesCurrentRoute(left, normalizedCurrentRoute) ? 1 : 0;
+        const rightRouteMatch = toolMatchesCurrentRoute(right, normalizedCurrentRoute) ? 1 : 0;
+        if (leftRouteMatch !== rightRouteMatch) {
+          return rightRouteMatch - leftRouteMatch;
+        }
+
+        const scoreDelta = (rightPreference?.semanticScore || 0) - (leftPreference?.semanticScore || 0);
+        if (scoreDelta !== 0) {
+          return scoreDelta;
+        }
+
+        return left.id.localeCompare(right.id);
+      });
+
       return {
         currentRoute: normalizedCurrentRoute,
-        tools: tools.map((tool) => toPlannerEntry(tool, normalizedCurrentRoute))
+        preferredToolIds,
+        tools: orderedTools.map((tool) => {
+          const preference = preferenceById.get(tool.id) || {
+            tool,
+            semanticScore: 0,
+            directMatchCount: 0,
+            hasPhraseMatch: false
+          };
+          return toPlannerEntry(tool, normalizedCurrentRoute, preference, preferredToolIds);
+        })
       };
     },
     resolveDirectToolShortcut: (command: string, currentRoute: string): DirectToolShortcutMatch | null => {

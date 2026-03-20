@@ -3,6 +3,7 @@ import type { DOMElementDescriptor, IntentPlan, IntentResolutionInput, IntentSte
 export type ExocorResolverOperation =
   | 'initial_stream'
   | 'resolve'
+  | 'preferred_tool_retry'
   | 'failed_step'
   | 'new_elements'
   | 'follow_up';
@@ -16,6 +17,14 @@ export interface ExocorInitialStreamRequest {
 export interface ExocorResolveRequest {
   operation: 'resolve';
   input: IntentResolutionInput;
+}
+
+export interface ExocorPreferredToolRetryRequest {
+  operation: 'preferred_tool_retry';
+  input: IntentResolutionInput;
+  preferredToolId: string;
+  preferredReason: string;
+  rejectedPlan: IntentPlan;
 }
 
 export interface ExocorFailedStepRequest {
@@ -42,6 +51,7 @@ export interface ExocorFollowUpRequest {
 export type ExocorResolverRequest =
   | ExocorInitialStreamRequest
   | ExocorResolveRequest
+  | ExocorPreferredToolRetryRequest
   | ExocorFailedStepRequest
   | ExocorNewElementsRequest
   | ExocorFollowUpRequest;
@@ -89,4 +99,3 @@ export function isExocorResolverStreamEvent(value: unknown): value is ExocorReso
   const event = value as Record<string, unknown>;
   return event.type === 'step' || event.type === 'result' || event.type === 'error';
 }
-

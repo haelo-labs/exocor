@@ -282,6 +282,7 @@ function buildAppMapSummary(): AppMapSummary {
 function buildToolCapabilityMap(currentRoute: string = '/dashboard'): ToolCapabilityMap {
   return {
     currentRoute,
+    preferredToolIds: currentRoute === '/dashboard' ? ['createTicket'] : ['createTicket'],
     tools: [
       {
         id: 'refreshDashboard',
@@ -291,7 +292,10 @@ function buildToolCapabilityMap(currentRoute: string = '/dashboard'): ToolCapabi
         safety: 'read',
         isGlobal: true,
         currentRouteMatches: true,
-        requiresNavigation: false
+        requiresNavigation: false,
+        semanticScore: 0.6,
+        preferredForCommand: false,
+        preferredReason: 'matched terms: dashboard'
       },
       {
         id: 'createTicket',
@@ -308,7 +312,10 @@ function buildToolCapabilityMap(currentRoute: string = '/dashboard'): ToolCapabi
         safety: 'write',
         isGlobal: false,
         currentRouteMatches: currentRoute === '/tickets',
-        requiresNavigation: currentRoute !== '/tickets'
+        requiresNavigation: currentRoute !== '/tickets',
+        semanticScore: 6.4,
+        preferredForCommand: true,
+        preferredReason: 'description phrase match: create ticket; matched terms: ticket'
       }
     ]
   };
@@ -662,11 +669,14 @@ describe('IntentResolver classification and context shaping', () => {
 
     for (const prompt of [streamedPrompt, resolvePrompt]) {
       expect(prompt).toContain('"toolCapabilityMap"');
+      expect(prompt).toContain('"preferredToolIds":["createTicket"]');
       expect(prompt).toContain('"id":"refreshDashboard"');
       expect(prompt).toContain('"id":"createTicket"');
       expect(prompt).toContain('"isGlobal":true');
       expect(prompt).toContain('"requiresNavigation":true');
       expect(prompt).toContain('"currentRouteMatches":false');
+      expect(prompt).toContain('"preferredForCommand":true');
+      expect(prompt).toContain('"semanticScore":6.4');
     }
   });
 
@@ -746,23 +756,117 @@ describe('IntentResolver classification and context shaping', () => {
     const resolveSystemPrompt = (createMessageSpy.mock.calls[1]?.[0] as { system?: string })?.system || '';
 
     expect(streamedSystemPrompt).toContain(
-      'toolCapabilityMap: explicit app-native tools, including global tools and route-specific tools across the whole app'
+      'toolCapabilityMap: explicit app-native tools, including global tools, route-specific tools, and preferred tools for this command'
+    );
+    expect(streamedSystemPrompt).toContain(
+      'If one preferred tool fully covers the task, use it instead of reconstructing the same task with DOM/app-map steps'
     );
     expect(streamedSystemPrompt).toContain('Global tools can be used from any route');
     expect(streamedSystemPrompt).toContain(
       'Route-specific tools remain available even when the current route is different'
     );
     expect(streamedSystemPrompt).toContain('plan navigate first and then the tool');
+    expect(streamedSystemPrompt).toContain('Example off-route preferred tool');
+    expect(streamedSystemPrompt).toContain('"toolId":"createRecord"');
+    expect(streamedSystemPrompt).toContain('"target":"/records"');
+    expect(streamedSystemPrompt).toContain('navigate "/records" → click "New Record" → fill "Title" → click "Create"');
     expect(streamedSystemPrompt).toContain('Never invent tool ids');
     expect(resolveSystemPrompt).toContain(
-      'Prefer a registered tool when the tool is clearly a better fit than DOM/app-map inference'
+      'If a preferred tool fully covers the task, use it instead of reconstructing the same workflow with DOM/app-map steps'
     );
     expect(resolveSystemPrompt).toContain(
-      'Route-specific tools remain available even when current route differs'
+      'Only when no preferred tool applies, CREATE or EDIT workflows should be completed with the full DOM or app-map path'
     );
     expect(resolveSystemPrompt).toContain(
       'Destructive tools should only be used for explicit destructive intent'
     );
+  });
+
+  it('retries with a stronger preferred-tool correction prompt when a strong tool was ignored', async () => {
+    const resolver = new IntentResolver({ apiKey: 'test-key' });
+    const map = buildMapWithRuntime([buildDescriptor()]);
+    const appMap = buildAppMap();
+    const toolCapabilityMap = buildToolCapabilityMap('/dashboard');
+    createMessageSpy.mockResolvedValueOnce({
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: [
+        {
+          type: 'text',
+          text: '[{"action":"navigate","target":"/tickets","value":null,"waitForDOM":true,"reason":"navigate to tickets first"},{"action":"tool","toolId":"createTicket","args":{"title":"Pump Failure"},"reason":"use preferred app-native tool"}]'
+        }
+      ]
+    });
+
+    const steps = await resolver.resolveWithPreferredToolRetry(
+      {
+        command: 'create a ticket called Pump Failure',
+        inputMethod: 'text',
+        map,
+        appMap,
+        toolCapabilityMap,
+        gazeTarget: null,
+        gesture: 'none'
+      },
+      'createTicket',
+      'strong semantic match for ticket creation',
+      {
+        source: 'claude',
+        rawCommand: 'create a ticket called Pump Failure',
+        confidence: 0.9,
+        steps: [
+          {
+            action: 'navigate',
+            target: '/tickets',
+            value: null,
+            waitForDOM: true,
+            reason: 'navigate to tickets'
+          },
+          {
+            action: 'click',
+            target: 'New Ticket',
+            value: null,
+            waitForDOM: true,
+            reason: 'open new ticket modal'
+          },
+          {
+            action: 'fill',
+            target: 'Title',
+            value: 'Pump Failure',
+            waitForDOM: false,
+            reason: 'fill ticket title'
+          },
+          {
+            action: 'click',
+            target: 'Create',
+            value: null,
+            waitForDOM: true,
+            reason: 'submit ticket'
+          }
+        ]
+      }
+    );
+
+    expect(steps).toMatchObject([
+      {
+        action: 'navigate',
+        target: '/tickets'
+      },
+      {
+        action: 'tool',
+        toolId: 'createTicket'
+      }
+    ]);
+
+    const request = createMessageSpy.mock.calls[0]?.[0] as {
+      system?: string;
+      messages?: Array<{ content?: string }>;
+    };
+    expect(request.system || '').toContain('PREFERRED TOOL CORRECTION:');
+    expect(request.system || '').toContain('you MUST use it instead of reconstructing the same workflow with DOM/app-map steps');
+    expect(request.system || '').toContain('you MUST plan navigate first and then the tool');
+    expect(request.messages?.[0]?.content || '').toContain('Preferred tool: createTicket');
+    expect(request.messages?.[0]?.content || '').toContain('Preferred tool reasoning: strong semantic match for ticket creation');
+    expect(request.messages?.[0]?.content || '').toContain('Previous plan to replace:');
   });
 
   it('instructs the streamed resolver to use voice gaze context only when semantically relevant', async () => {
@@ -801,6 +905,7 @@ describe('IntentResolver classification and context shaping', () => {
     expect(systemPrompt).toContain(
       'Use gaze context only when it is semantically relevant to the command'
     );
+    expect(systemPrompt).toContain("'create a new record', 'navigate to reports', 'filter by critical priority'");
     expect(systemPrompt).toContain('ignore gazeTarget and resolve from the command alone');
   });
 

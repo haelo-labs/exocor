@@ -231,6 +231,7 @@ describe('DeterministicIntentResolver', () => {
       appMap: null,
       toolCapabilityMap: {
         currentRoute: '/workspace',
+        preferredToolIds: [],
         tools: [
           {
             id: 'createTicket',
@@ -240,7 +241,9 @@ describe('DeterministicIntentResolver', () => {
             safety: 'write',
             isGlobal: false,
             currentRouteMatches: false,
-            requiresNavigation: true
+            requiresNavigation: true,
+            semanticScore: 0,
+            preferredForCommand: false
           }
         ]
       },

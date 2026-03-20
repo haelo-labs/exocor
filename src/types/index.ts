@@ -192,11 +192,15 @@ export interface ToolCapabilityEntry extends ExocorToolMetadata {
   isGlobal: boolean;
   currentRouteMatches: boolean;
   requiresNavigation: boolean;
+  semanticScore: number;
+  preferredForCommand: boolean;
+  preferredReason?: string;
 }
 
 /** Explicit tool capability map sent alongside the learned app model. */
 export interface ToolCapabilityMap {
   currentRoute: string;
+  preferredToolIds: string[];
   tools: ToolCapabilityEntry[];
 }
 

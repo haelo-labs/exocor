@@ -6,12 +6,14 @@ import type { IntentPlan, IntentResolutionInput, IntentStep } from '../types';
 const {
   resolveSpy,
   resolveStreamSpy,
+  resolveWithPreferredToolRetrySpy,
   resolveForFailedStepSpy,
   resolveForNewElementsSpy,
   resolveFollowUpSpy
 } = vi.hoisted(() => ({
   resolveSpy: vi.fn(),
   resolveStreamSpy: vi.fn(),
+  resolveWithPreferredToolRetrySpy: vi.fn(),
   resolveForFailedStepSpy: vi.fn(),
   resolveForNewElementsSpy: vi.fn(),
   resolveFollowUpSpy: vi.fn()
@@ -32,6 +34,15 @@ vi.mock('../core/IntentResolver', () => ({
       }
     ) {
       return resolveStreamSpy(input, runtimeContext, callbacks);
+    }
+
+    async resolveWithPreferredToolRetry(
+      input: IntentResolutionInput,
+      preferredToolId: string,
+      preferredReason: string,
+      rejectedPlan: IntentPlan
+    ) {
+      return resolveWithPreferredToolRetrySpy(input, preferredToolId, preferredReason, rejectedPlan);
     }
 
     async resolveForFailedStep(
@@ -93,6 +104,7 @@ describe('createExocorResolverEndpoint', () => {
   beforeEach(() => {
     resolveSpy.mockReset();
     resolveStreamSpy.mockReset();
+    resolveWithPreferredToolRetrySpy.mockReset();
     resolveForFailedStepSpy.mockReset();
     resolveForNewElementsSpy.mockReset();
     resolveFollowUpSpy.mockReset();
@@ -251,5 +263,82 @@ describe('createExocorResolverEndpoint', () => {
         plan
       }
     });
+  });
+
+  it('returns JSON envelopes for preferred-tool retry operations', async () => {
+    const retriedSteps: IntentStep[] = [
+      {
+        action: 'navigate',
+        target: '/tickets',
+        value: null,
+        waitForDOM: true,
+        reason: 'navigate to tickets first'
+      },
+      {
+        action: 'tool',
+        toolId: 'createTicket',
+        args: { title: 'Pump Failure' },
+        reason: 'use preferred app-native tool'
+      }
+    ];
+    resolveWithPreferredToolRetrySpy.mockResolvedValueOnce(retriedSteps);
+
+    const handler = createExocorResolverEndpoint({ apiKey: 'server-key' });
+    const input = buildResolutionInput();
+    const rejectedPlan: IntentPlan = {
+      source: 'claude',
+      rawCommand: 'create a ticket called Pump Failure',
+      confidence: 0.9,
+      steps: [
+        {
+          action: 'click',
+          target: 'New Ticket',
+          value: null,
+          waitForDOM: true,
+          reason: 'open new ticket modal'
+        },
+        {
+          action: 'fill',
+          target: 'Title',
+          value: 'Pump Failure',
+          waitForDOM: false,
+          reason: 'fill ticket title'
+        },
+        {
+          action: 'click',
+          target: 'Create',
+          value: null,
+          waitForDOM: true,
+          reason: 'submit ticket'
+        }
+      ]
+    };
+
+    const response = await handler(
+      new Request('http://localhost/api/exocor/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: 'preferred_tool_retry',
+          input,
+          preferredToolId: 'createTicket',
+          preferredReason: 'strong semantic match',
+          rejectedPlan
+        })
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      data: {
+        steps: retriedSteps
+      }
+    });
+    expect(resolveWithPreferredToolRetrySpy).toHaveBeenCalledWith(
+      input,
+      'createTicket',
+      'strong semantic match',
+      rejectedPlan
+    );
   });
 });
