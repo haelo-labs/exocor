@@ -11,6 +11,70 @@ Exocor is a React SDK for multimodal app control.
 It runs inside your app, builds app-aware runtime context, sends planning requests to a secure backend resolver, and executes the resulting workflow against the live UI.
 It stays bootstrap-first, and can now also accept explicit app-native tools as a higher-confidence capability layer on top of discovery.
 
+If Exocor is useful to you, please [star the repo on GitHub](https://github.com/haelo-labs/exocor). It helps more people find the project.
+Get updates on [exocor.dev](https://exocor.dev) for release notes, demo breakdowns, and early design-partner invites.
+
+## Explicit Tools + Capability Map Preview
+
+Exocor still learns your app automatically.
+
+Now it can also use explicit app-native actions when they exist.
+
+This update adds an explicit tools / capability layer on top of the current bootstrap architecture, so Exocor can choose between:
+
+- learned app structure (app map + runtime context)
+- explicit app-native actions
+- DOM fallback when needed
+
+### What's new
+
+- provider-level tool registration
+- global and route-specific tools
+- route-specific tools remain visible to planning even when the current route is different
+- stronger preference for `navigate -> tool` when an explicit route-specific action is the better path
+- app-map discovery and DOM fallback remain intact
+- tools are additive, not a replacement for bootstrap/discovery
+
+### What this means
+
+Exocor can stay bootstrap-first, but become more reliable when apps expose better handles.
+
+In practice, that means:
+
+- start with a wrapper
+- let Exocor learn the app
+- optionally register explicit actions for workflows you want to make safer and more reliable
+
+### Status
+
+This is available on GitHub today.
+
+The npm package is still on the previous release for now.
+The package update will come after the next pass on UI / release prep.
+
+### Follow progress
+
+- Star the repo if this direction is interesting
+- Sign up on [exocor.dev](https://exocor.dev) to get release notes, demo breakdowns, and early design-partner invites
+
+## Install
+
+```bash
+npm install exocor
+```
+
+Peer dependencies:
+
+- `react >= 18`
+- `react-dom >= 18`
+
+## Integration Shapes
+
+`SpatialProvider` must wrap the host UI subtree Exocor should observe and control.
+It does not need to be the topmost provider in your app.
+
+### Smallest Valid Integration
+
 ```tsx
 import { SpatialProvider } from 'exocor'
 
@@ -23,16 +87,45 @@ export default function App() {
 }
 ```
 
-## Install
+Use this when you only need the SDK wrapper around your app UI.
 
-```bash
-npm install exocor
+### Recommended Tool-Enabled Composition
+
+If your tool handlers need app state, router helpers, or domain actions, keep those providers above `SpatialProvider` and pass tools from inside the wrapped app shell.
+
+```tsx
+// main.tsx
+import { createRoot } from 'react-dom/client'
+import App from './app/App'
+import { AppProviders } from './app/providers'
+
+createRoot(document.getElementById('root')!).render(
+  <AppProviders>
+    <App />
+  </AppProviders>
+)
 ```
 
-Peer dependencies:
+```tsx
+// app/App.tsx
+import { SpatialProvider, type ExocorToolDefinition } from 'exocor'
+import { RouterProvider } from 'react-router'
+import { router } from './router'
+import { useWorkspaceTools } from './useWorkspaceTools'
 
-- `react >= 18`
-- `react-dom >= 18`
+export default function App() {
+  const tools: ExocorToolDefinition[] = useWorkspaceTools()
+
+  return (
+    <SpatialProvider tools={tools}>
+      <RouterProvider router={router} />
+    </SpatialProvider>
+  )
+}
+```
+
+That is the recommended shape for real apps with app-native tools.
+`SpatialProvider` still wraps the routed UI Exocor needs to scan and control, while your own providers stay above it.
 
 ## What you can do
 
@@ -108,6 +201,7 @@ The runtime already supports:
 
 - deterministic instant actions for simple exact commands
 - deterministic exact-match shortcuts for certain explicit no-arg tools
+- authoritative execution for a unique strong preferred tool when required arguments can be resolved and validated safely
 - streamed model-based planning for multi-step workflows
 - app-map-first planning where possible
 - DOM execution with retries and follow-up planning
@@ -123,13 +217,13 @@ They are an additional semantic layer on top of the current architecture.
 - If no tool fits, Exocor keeps using its current app-map and DOM-based planning/execution behavior.
 - Tools can be global or route-specific.
 - Route-specific tools stay visible to planning even when the current route is different.
-- When a route-specific tool is off-route, the planner can explicitly produce a plan like "navigate, then use the tool."
+- When a route-specific tool is off-route, Exocor can navigate first and then invoke the tool.
 
-Conceptually, trusted execution order is now:
+Today the runtime behaves like this:
 
-1. explicit tools
-2. learned app map and explicit locators
-3. DOM fallback
+1. Exact no-arg tool shortcuts can execute directly when they uniquely match.
+2. A unique strong preferred tool can become the authoritative path if Exocor can safely resolve and validate its arguments.
+3. If the tool is ambiguous, missing required arguments, or cannot safely cover the intent, Exocor falls back to clarification, planner-led app-map behavior, and finally DOM execution when needed.
 
 ## Registering Tools
 
@@ -179,7 +273,14 @@ In that example:
 
 - `refreshWorkspace` is global, so the planner can use it from anywhere.
 - `createRecord` belongs to `/records`, but the planner still knows it exists even if the user is currently elsewhere.
-- If the user is on `/dashboard`, Exocor can plan `navigate` to `/records` and then a `tool` step for `createRecord`.
+- If the user is on `/dashboard`, Exocor can still plan `navigate` to `/records` and then invoke `createRecord`.
+
+Tool handler guidance:
+
+- Keep handlers app-native. Prefer router navigation, state updates, and domain actions over DOM clicks.
+- Register global tools only for actions that truly make sense everywhere.
+- Use route-specific tools for actions that belong to a particular workflow or screen.
+- Do not replace your existing UI flow with tools. Tools are additive and should coexist with normal discovery-based behavior.
 
 ## What runs locally
 
@@ -230,6 +331,7 @@ For local development:
 - run `npx exocor dev`
 - the local relay reads `ANTHROPIC_API_KEY` from the host app root
 - the browser talks to the relay at `http://127.0.0.1:8787`
+- the relay serves the built server output from `dist`, so local SDK changes require `npm run build` and a relay restart
 
 For production:
 
@@ -287,7 +389,7 @@ These are real apps using Exocor, not mocked landing-page demos.
 
 ## Current limitations
 
-Exocor is **v0.1.1** and still early.
+Exocor is **v0.2.0** and still early.
 
 Today it is best described as:
 
@@ -319,9 +421,27 @@ npx exocor dev
 npm run dev
 ```
 
+If you are testing a local SDK checkout instead of the published package:
+
+```bash
+# in the exocor repo
+npm run build
+
+# restart any old relay on 8787, then run:
+npx exocor dev
+```
+
 ### Production
 
 Mount the resolver endpoint on your backend and wrap your app with `SpatialProvider`.
+
+## Docs
+
+- [Getting started](./docs/getting-started.md)
+- [Local development](./docs/local-development.md)
+- [Production setup](./docs/production.md)
+- [Capabilities](./docs/capabilities.md)
+- [Security model](./docs/security.md)
 
 ## Open source
 

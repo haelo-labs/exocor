@@ -20,6 +20,18 @@
 - Prefers app-map-aware planning first, then uses live DOM execution where needed.
 - Supports streamed planning, clarification, stale-map refresh, and dynamic follow-up steps.
 
+## Explicit Tools
+- Supports provider-level app-native tools passed to `SpatialProvider`.
+- Tools can be global or route-specific.
+- Route-specific tools remain visible even when the current route is different.
+- Tool handlers stay local to the host app and are not sent to the resolver.
+
+## Execution Model Today
+- Exact no-arg tool shortcuts can execute directly when they uniquely match.
+- A unique strong preferred tool can become the authoritative execution path if Exocor can resolve and validate its required arguments safely.
+- When a route-specific preferred tool is off-route, Exocor can navigate first and then invoke the tool.
+- If a tool is ambiguous, missing required arguments, or cannot safely cover the task, Exocor falls back to clarification, planner-led app-map execution, and DOM execution as needed.
+
 ## SDK UI
 - Renders chat, toasts, learning overlay, voice transcript, gaze overlay, and floating clarification UI.
 - Uses a shadow root so host CSS does not restyle the SDK.

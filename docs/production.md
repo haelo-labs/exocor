@@ -25,6 +25,34 @@ import { SpatialProvider } from 'exocor';
 </SpatialProvider>
 ```
 
+If your app registers provider-level tools and those handlers depend on app state, keep your own providers above `SpatialProvider` and wrap the routed UI inside it:
+
+```tsx
+import { SpatialProvider } from 'exocor';
+import { RouterProvider } from 'react-router';
+import { router } from './router';
+import { AppProviders } from './providers';
+import { useWorkspaceTools } from './useWorkspaceTools';
+
+function AppShell() {
+  const tools = useWorkspaceTools();
+
+  return (
+    <SpatialProvider tools={tools}>
+      <RouterProvider router={router} />
+    </SpatialProvider>
+  );
+}
+
+export default function Root() {
+  return (
+    <AppProviders>
+      <AppShell />
+    </AppProviders>
+  );
+}
+```
+
 ## Custom Route
 If your backend route lives elsewhere, pass `backendUrl`:
 
@@ -39,6 +67,8 @@ Exocor sends JSON `POST` requests with one of these operations:
 
 - `initial_stream`
 - `resolve`
+- `preferred_tool_intent`
+- `preferred_tool_retry`
 - `failed_step`
 - `new_elements`
 - `follow_up`
@@ -51,4 +81,4 @@ Exocor sends JSON `POST` requests with one of these operations:
 {"type":"error","message":"..."}
 ```
 
-The helper exported by `exocor/server` already implements this contract.
+The helper exported by `exocor/server` already implements this contract, including the preferred-tool argument resolution and retry operations.
