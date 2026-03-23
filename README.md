@@ -1,63 +1,24 @@
 # Exocor
 
-![VideoProject2-ezgif com-video-to-gif-converter (1)](https://github.com/user-attachments/assets/734b67b5-c2f2-4c73-999f-1bb871e78713)
+> Multimodal control for existing React apps.
 
-> **Control your app without touching it.**
->
-> Voice, gaze, and gesture control for existing React apps.
-> One component. No rewrites.
+Exocor is an open-source React SDK that runs inside the host app and turns voice, gaze, gesture, and typed intent into app-aware actions. It builds runtime context, discovers an app map, and can also invoke explicit app-native tools registered through `SpatialProvider`.
 
-Exocor is a React SDK for multimodal app control.
-It runs inside your app, builds app-aware runtime context, sends planning requests to a secure backend resolver, and executes the resulting workflow against the live UI.
-It stays bootstrap-first, and can now also accept explicit app-native tools as a higher-confidence capability layer on top of discovery.
+Note: `main` and this README reflect the upcoming `v0.2.0` release. `npm install exocor` still points to the previous stable release until `0.2.0` is published.
 
-If Exocor is useful to you, please [star the repo on GitHub](https://github.com/haelo-labs/exocor). It helps more people find the project.
-Get updates on [exocor.dev](https://exocor.dev) for release notes, demo breakdowns, and early design-partner invites.
+## Why Exocor
 
-## Explicit Tools + Capability Map Preview
+Most browser agents operate from outside the app and mainly see a rendered page. Exocor runs inside the React tree, so it can plan with better context: current route, visible UI, discovered app structure, focus and gaze signals, and explicit app-native tools when you expose them.
 
-Exocor still learns your app automatically.
+Exocor is intentionally hybrid:
 
-Now it can also use explicit app-native actions when they exist.
+1. learned app model
+2. explicit app-native tools
+3. DOM fallback when needed
 
-This update adds an explicit tools / capability layer on top of the current bootstrap architecture, so Exocor can choose between:
+That means tools are additive, not a replacement for bootstrap and discovery. Exocor can learn the app first, use explicit actions when they are the safer path, and still fall back to the live UI when needed. It does not depend on arbitrary React state access, and it does not claim a zero-DOM runtime.
 
-- learned app structure (app map + runtime context)
-- explicit app-native actions
-- DOM fallback when needed
-
-### What's new
-
-- provider-level tool registration
-- global and route-specific tools
-- route-specific tools remain visible to planning even when the current route is different
-- stronger preference for `navigate -> tool` when an explicit route-specific action is the better path
-- app-map discovery and DOM fallback remain intact
-- tools are additive, not a replacement for bootstrap/discovery
-
-### What this means
-
-Exocor can stay bootstrap-first, but become more reliable when apps expose better handles.
-
-In practice, that means:
-
-- start with a wrapper
-- let Exocor learn the app
-- optionally register explicit actions for workflows you want to make safer and more reliable
-
-### Status
-
-This is available on GitHub today.
-
-The npm package is still on the previous release for now.
-The package update will come after the next pass on UI / release prep.
-
-### Follow progress
-
-- Star the repo if this direction is interesting
-- Sign up on [exocor.dev](https://exocor.dev) to get release notes, demo breakdowns, and early design-partner invites
-
-## Install
+## Quick Start
 
 ```bash
 npm install exocor
@@ -68,12 +29,7 @@ Peer dependencies:
 - `react >= 18`
 - `react-dom >= 18`
 
-## Integration Shapes
-
-`SpatialProvider` must wrap the host UI subtree Exocor should observe and control.
-It does not need to be the topmost provider in your app.
-
-### Smallest Valid Integration
+`SpatialProvider` should wrap the UI subtree Exocor needs to observe and control.
 
 ```tsx
 import { SpatialProvider } from 'exocor'
@@ -87,34 +43,52 @@ export default function App() {
 }
 ```
 
-Use this when you only need the SDK wrapper around your app UI.
+For local development, run `npx exocor dev` from your app root. For production, mount the Exocor resolver endpoint on your backend.
 
-### Recommended Tool-Enabled Composition
+## Tool-Enabled Integration
 
-If your tool handlers need app state, router helpers, or domain actions, keep those providers above `SpatialProvider` and pass tools from inside the wrapped app shell.
-
-```tsx
-// main.tsx
-import { createRoot } from 'react-dom/client'
-import App from './app/App'
-import { AppProviders } from './app/providers'
-
-createRoot(document.getElementById('root')!).render(
-  <AppProviders>
-    <App />
-  </AppProviders>
-)
-```
+If your handlers need router helpers, domain actions, or host app state, keep those providers above `SpatialProvider` and pass tools into the provider that wraps the routed UI.
 
 ```tsx
-// app/App.tsx
 import { SpatialProvider, type ExocorToolDefinition } from 'exocor'
 import { RouterProvider } from 'react-router'
 import { router } from './router'
-import { useWorkspaceTools } from './useWorkspaceTools'
+import { useTicketActions } from './tickets'
+
+function useWorkspaceTools(): ExocorToolDefinition[] {
+  const { createTicket } = useTicketActions()
+
+  return [
+    {
+      id: 'goToTickets',
+      description: 'Go to the tickets view',
+      safety: 'read',
+      handler: async () => {
+        await router.navigate('/tickets')
+      }
+    },
+    {
+      id: 'createTicket',
+      description: 'Create a ticket',
+      routes: ['/tickets'],
+      safety: 'write',
+      parameters: [
+        {
+          name: 'title',
+          description: 'Ticket title',
+          type: 'string',
+          required: true
+        }
+      ],
+      handler: async ({ title }) => {
+        await createTicket({ title: String(title) })
+      }
+    }
+  ]
+}
 
 export default function App() {
-  const tools: ExocorToolDefinition[] = useWorkspaceTools()
+  const tools = useWorkspaceTools()
 
   return (
     <SpatialProvider tools={tools}>
@@ -124,316 +98,25 @@ export default function App() {
 }
 ```
 
-That is the recommended shape for real apps with app-native tools.
-`SpatialProvider` still wraps the routed UI Exocor needs to scan and control, while your own providers stay above it.
+Global tools are available from anywhere. Route-specific tools stay visible to planning even when the user is elsewhere, so Exocor can navigate first and then invoke the app-native action when that is the better path.
 
-## What you can do
+## How It Works
 
-Instead of clicking around, users can:
+On mount, Exocor scans the wrapped subtree, builds runtime context, and discovers a reusable app map of routes, surfaces, actions, and interactive elements.
 
-- Look at a row and say: **"Open this"**
-- Say: **"Navigate to reports"**
-- Say: **"Create record"**
-- Look at a field and say: **"Edit this"**
+When a command arrives, Exocor resolves it against the learned app model and any registered tools. If a safe explicit tool clearly fits, Exocor can execute it directly. Otherwise it plans against the learned app structure and falls back to DOM execution when needed.
 
-And for more complex actions:
+The local development path uses `npx exocor dev` as a relay. Production integrations mount the resolver endpoint on your backend and keep execution inside the host app.
 
-- **"Create a record for this issue"**
-- **"Show me last month"**
-- **"Navigate to inventory and filter for critical"**
+## Security Model
 
-## Why this is different from browser agents
+Exocor keeps control logic in the host app and sends structured runtime context to a resolver you run locally or on your backend. By default it works from discovered UI structure, route context, focus and gaze signals, and compressed capability data rather than arbitrary React state dumps. Explicit tool calls are validated locally before handler execution.
 
-External browser agents operate outside the app and mainly see the rendered browser surface.
+See the production and security docs for the exact backend shape and data flow boundaries.
 
-Exocor runs inside the host React app.
-That means it can use in-app runtime context like:
+## Current Status
 
-- current route and URL
-- visible dialogs, buttons, fields, and tables
-- app-map structure discovered from the host app
-- focused element / selected text for typed input
-- gaze target context for voice commands
-- some React and router internals where available
-
-Today Exocor is intentionally **hybrid**:
-
-- it discovers app structure and runtime context from inside the app
-- it can accept explicit app-native tools/capabilities from the provider
-- it still uses the live DOM as a reliable execution layer and fallback
-
-So the claim is not "zero DOM."
-The claim is "app-aware planning + in-app execution," instead of operating blind from outside the app.
-That planning context now combines:
-
-- a learned app model from app-map discovery, current route, live DOM/runtime context, and gaze/focus state
-- an explicit capability model from registered tools, parameter schema, route affinity, and safety metadata
-
-## Architecture
-
-```mermaid
-flowchart LR
-  U["User input<br/>voice / gaze / gesture / typed"] --> X["Exocor inside React app"]
-  X --> D["Learned app model<br/>DOM + route/runtime context + app map"]
-  X --> T["Explicit capability model<br/>registered tools + routes + safety + params"]
-  D --> R["Resolver endpoint<br/>same-origin backend or local relay"]
-  T --> R
-  R --> L["LLM planning"]
-  L --> P["Workflow steps"]
-  P --> E["Local executor"]
-  E --> A["Live app UI / DOM or app-native tool handler"]
-```
-
-## How it works
-
-On mount, Exocor:
-
-1. mounts its own SDK UI in an isolated shadow root
-2. scans the host app and builds a live capability map
-3. discovers and caches an app map of routes, buttons, tabs, filters, forms, and modal surfaces
-4. registers any explicit tools passed to `SpatialProvider`
-5. waits for a typed, voice, gaze-anchored, or gesture-driven command
-6. resolves the command into workflow steps using both the learned app model and any explicit tool metadata
-7. executes those steps against the live app or a trusted tool handler
-8. retries or replans if the UI changes or a target goes stale
-
-The runtime already supports:
-
-- deterministic instant actions for simple exact commands
-- deterministic exact-match shortcuts for certain explicit no-arg tools
-- authoritative execution for a unique strong preferred tool when required arguments can be resolved and validated safely
-- streamed model-based planning for multi-step workflows
-- app-map-first planning where possible
-- DOM execution with retries and follow-up planning
-- voice clarification when a command is ambiguous
-
-## Explicit Tools Are Additive
-
-Explicit tools do not replace Exocor's bootstrap/discovery flow.
-They are an additional semantic layer on top of the current architecture.
-
-- Bootstrap and app-map discovery still run exactly as before.
-- Registered tools give the planner higher-confidence app-native actions when a tool is clearly the best fit.
-- If no tool fits, Exocor keeps using its current app-map and DOM-based planning/execution behavior.
-- Tools can be global or route-specific.
-- Route-specific tools stay visible to planning even when the current route is different.
-- When a route-specific tool is off-route, Exocor can navigate first and then invoke the tool.
-
-Today the runtime behaves like this:
-
-1. Exact no-arg tool shortcuts can execute directly when they uniquely match.
-2. A unique strong preferred tool can become the authoritative path if Exocor can safely resolve and validate its arguments.
-3. If the tool is ambiguous, missing required arguments, or cannot safely cover the intent, Exocor falls back to clarification, planner-led app-map behavior, and finally DOM execution when needed.
-
-## Registering Tools
-
-Provider-level registration is the v1 public surface:
-
-```tsx
-import { SpatialProvider, type ExocorToolDefinition } from 'exocor'
-
-const tools: ExocorToolDefinition[] = [
-  {
-    id: 'refreshWorkspace',
-    description: 'Refresh workspace',
-    safety: 'read',
-    handler: async () => {
-      await refreshWorkspace()
-    }
-  },
-  {
-    id: 'createRecord',
-    description: 'Create record',
-    routes: ['/records'],
-    safety: 'write',
-    parameters: [
-      {
-        name: 'title',
-        description: 'Record title',
-        type: 'string',
-        required: true
-      }
-    ],
-    handler: async ({ title }) => {
-      await createRecord({ title: String(title) })
-    }
-  }
-]
-
-export default function App() {
-  return (
-    <SpatialProvider tools={tools}>
-      <YourApp />
-    </SpatialProvider>
-  )
-}
-```
-
-In that example:
-
-- `refreshWorkspace` is global, so the planner can use it from anywhere.
-- `createRecord` belongs to `/records`, but the planner still knows it exists even if the user is currently elsewhere.
-- If the user is on `/dashboard`, Exocor can still plan `navigate` to `/records` and then invoke `createRecord`.
-
-Tool handler guidance:
-
-- Keep handlers app-native. Prefer router navigation, state updates, and domain actions over DOM clicks.
-- Register global tools only for actions that truly make sense everywhere.
-- Use route-specific tools for actions that belong to a particular workflow or screen.
-- Do not replace your existing UI flow with tools. Tools are additive and should coexist with normal discovery-based behavior.
-
-## What runs locally
-
-These parts run inside the host app:
-
-- Web Speech API speech recognition
-- MediaPipe face and hand tracking
-- DOM scanning
-- app-map discovery and caching
-- route/runtime inspection
-- gaze and gesture overlays
-- execution of clicks, fills, submits, scrolls, and navigation
-- command history and local UI feedback
-
-## What gets sent to the resolver / LLM
-
-Exocor sends planning context to a backend resolver, not directly to the browser.
-Depending on the command, that context can include:
-
-- the user command
-- input method (`voice`, `text`, `gesture`)
-- current route and URL
-- compressed app context
-- visible dialogs, form fields, button state, and on-screen UI structure
-- app-map summary or route structure
-- explicit capability metadata for all registered tools
-- focused element / selected text for typed commands
-- gaze target context for voice commands
-- completed steps, failed steps, or newly appeared elements for replanning
-
-Important: this is an **early hybrid runtime**, so visible UI state can be part of the model context today.
-For tools, Exocor sends planner-safe metadata only: tool ids, descriptions, parameter schema, safety, route affinity, and whether the current route matches or likely requires navigation first. Runtime handlers stay local.
-
-## What does not get sent by default
-
-- no Anthropic API key from the browser
-- no browser extension access to arbitrary websites
-- no screenshots or video frames as part of the normal planning flow
-- no source-code upload
-- no hidden background access to apps that did not install Exocor
-
-## Security model
-
-Exocor does **not** accept model API keys in the browser.
-
-For local development:
-
-- run `npx exocor dev`
-- the local relay reads `ANTHROPIC_API_KEY` from the host app root
-- the browser talks to the relay at `http://127.0.0.1:8787`
-- the relay serves the built server output from `dist`, so local SDK changes require `npm run build` and a relay restart
-
-For production:
-
-- mount a same-origin resolver route such as `/api/exocor/resolve`
-- keep `ANTHROPIC_API_KEY` on the server
-
-Example:
-
-```ts
-import { createExocorResolverEndpoint } from 'exocor/server'
-
-const handleExocorResolver = createExocorResolverEndpoint()
-
-export async function POST(request: Request) {
-  return handleExocorResolver(request)
-}
-```
-
-If your route lives elsewhere:
-
-```tsx
-<SpatialProvider backendUrl="/internal/exocor/resolve">
-  <App />
-</SpatialProvider>
-```
-
-## Multimodal input
-
-- **Voice** -> intent
-- **Gaze** -> on-screen context like "this"
-- **Gesture** -> click, drag, zoom, and interaction control
-
-Works with a standard webcam. No special hardware required.
-
-## Examples
-
-These are real apps using Exocor, not mocked landing-page demos.
-
-- **Ops Field Demo (CRM)**
-  Navigation, ticket creation, and operational workflows
-  [github.com/haelo-labs/haelo-ops-demo](https://github.com/haelo-labs/haelo-ops-demo)
-
-- **3D Viewer Demo**
-  Gesture control, zoom, rotation, and material changes
-  [github.com/haelo-labs/3d-viewer-demo](https://github.com/haelo-labs/3d-viewer-demo)
-
-## When this is useful
-
-- internal tools and dashboards
-- admin panels
-- CRM / ERP systems
-- healthcare interfaces
-- industrial and field applications
-- UIs where a mouse and keyboard are not always the best interface
-
-## Current limitations
-
-Exocor is **v0.2.0** and still early.
-
-Today it is best described as:
-
-- a React-first SDK
-- a hybrid runtime with a learned app model plus an additive explicit capability layer
-- low-config and inference-heavy by design
-- more production-ready for demos and internal experimentation than broad deployment
-
-Some interactions are instant.
-More complex ones use an LLM and may take a few seconds.
-
-The long-term direction is:
-
-- keep low-config discovery for bootstrap
-- keep expanding explicit app-native capabilities, adapters, and actions for production reliability without removing discovery
-
-## Getting started
-
-### Local development
-
-```bash
-# 1. Set your Anthropic key
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-
-# 2. Start the local relay
-npx exocor dev
-
-# 3. Run your app
-npm run dev
-```
-
-If you are testing a local SDK checkout instead of the published package:
-
-```bash
-# in the exocor repo
-npm run build
-
-# restart any old relay on 8787, then run:
-npx exocor dev
-```
-
-### Production
-
-Mount the resolver endpoint on your backend and wrap your app with `SpatialProvider`.
+Exocor is early. Today it is low-config, inference-heavy, and best suited to demos, internal tools, experimental deployments, and early design-partner work. It is promising precisely because it does not require a full app rewrite, but it is not positioned yet as a broad production rollout for every React surface.
 
 ## Docs
 
@@ -443,9 +126,10 @@ Mount the resolver endpoint on your backend and wrap your app with `SpatialProvi
 - [Capabilities](./docs/capabilities.md)
 - [Security model](./docs/security.md)
 
-## Open source
+## Open Source
 
-MIT licensed. Free forever.
+MIT licensed.
 
 - GitHub: [github.com/haelo-labs/exocor](https://github.com/haelo-labs/exocor)
 - Site: [exocor.dev](https://exocor.dev)
+- If Exocor is useful to you, please [star the repo](https://github.com/haelo-labs/exocor)
