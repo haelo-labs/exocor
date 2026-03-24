@@ -361,6 +361,8 @@ function ChatPanelContent({
   const traceDotColor = theme.mode === 'light' ? '#a8a8a8' : '#c6c6c6';
   const traceTextColor = theme.mode === 'light' ? '#262626' : theme.textPrimary;
   const historyGap = theme.mode === 'light' ? 16 : 12;
+  const intentSuccessIconColor = theme.mode === 'light' ? '#24A148' : '#42BE65';
+  const intentFailedIconColor = theme.mode === 'light' ? '#DA1E28' : '#FA4D56';
 
   return (
     <div
@@ -591,9 +593,9 @@ function ChatPanelContent({
                   const statusMessage = itemMessage || fallbackStatusMessage(status);
                   const resultIconColor =
                     status === 'done'
-                      ? theme.status.listening.dot
+                      ? intentSuccessIconColor
                       : status === 'failed'
-                        ? theme.toastFailedBorder
+                        ? intentFailedIconColor
                         : theme.statusLineColor;
 
                   return (
