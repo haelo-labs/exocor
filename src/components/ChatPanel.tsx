@@ -8,6 +8,7 @@ import {
   CircleCheckIcon,
   CircleXIcon,
   LoadingIcon,
+  StopIcon,
   TrashIcon
 } from './sdkIcons';
 
@@ -41,6 +42,8 @@ interface ChatPanelProps {
   onSubmit: (value: string) => void;
   onOpenChange: (open: boolean) => void;
   onClearHistory: () => void;
+  onStop?: () => void;
+  isResolving?: boolean;
   pendingClarificationQuestion?: string | null;
   modalitiesStatus: {
     voice: boolean;
@@ -183,6 +186,8 @@ function ChatPanelContent({
   onSubmit,
   onOpenChange,
   onClearHistory,
+  onStop = () => {},
+  isResolving = false,
   pendingClarificationQuestion = null,
   modalitiesStatus,
   themeMode = 'dark'
@@ -312,12 +317,24 @@ function ChatPanelContent({
     });
   };
 
+  const handlePrimaryAction = (): void => {
+    if (isResolving) {
+      onStop();
+      return;
+    }
+    handleSubmit();
+  };
+
   const sendButtonBackground = isSendPressed
     ? theme.sendButtonPressedSurface
     : isSendHovered
       ? theme.sendButtonHoverSurface
       : theme.sendButtonSurface;
-  const sendButtonIconColor = canSubmit ? theme.sendButtonActiveIcon : theme.sendButtonInactiveIcon;
+  const sendButtonIconColor = isResolving
+    ? theme.sendButtonActiveIcon
+    : canSubmit
+      ? theme.sendButtonActiveIcon
+      : theme.sendButtonInactiveIcon;
   const clearButtonBackground = isClearPressed
     ? theme.clearButtonPressedSurface
     : isClearHovered
@@ -942,7 +959,9 @@ function ChatPanelContent({
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  handleSubmit();
+                  if (!isResolving) {
+                    handleSubmit();
+                  }
                 }
               }}
               style={{
@@ -967,11 +986,11 @@ function ChatPanelContent({
             <button
               {...SDK_UI_MARKER}
               type="button"
-              disabled={!canSubmit}
-              onClick={handleSubmit}
-              aria-label="Send command"
+              disabled={!isResolving && !canSubmit}
+              onClick={handlePrimaryAction}
+              aria-label={isResolving ? 'Stop command' : 'Send command'}
               onPointerEnter={() => {
-                if (!canSubmit) {
+                if (!isResolving && !canSubmit) {
                   return;
                 }
                 setIsSendHovered(true);
@@ -981,7 +1000,7 @@ function ChatPanelContent({
                 setIsSendPressed(false);
               }}
               onPointerDown={() => {
-                if (!canSubmit) {
+                if (!isResolving && !canSubmit) {
                   return;
                 }
                 setIsSendPressed(true);
@@ -1006,14 +1025,18 @@ function ChatPanelContent({
                 border: 'none',
                 background: sendButtonBackground,
                 color: sendButtonIconColor,
-                cursor: canSubmit ? 'pointer' : 'default',
+                cursor: isResolving || canSubmit ? 'pointer' : 'default',
                 flex: '0 0 32px',
                 padding: 0,
-                opacity: canSubmit ? 1 : 0.65,
+                opacity: isResolving || canSubmit ? 1 : 0.65,
                 transition: 'background-color 120ms ease, opacity 120ms ease'
               }}
             >
-              <ArrowUpIcon size={16} color={sendButtonIconColor} />
+              {isResolving ? (
+                <StopIcon size={16} color={sendButtonIconColor} />
+              ) : (
+                <ArrowUpIcon size={16} color={sendButtonIconColor} />
+              )}
             </button>
           </div>
         </div>

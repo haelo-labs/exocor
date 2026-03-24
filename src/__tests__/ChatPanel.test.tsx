@@ -53,6 +53,31 @@ describe('ChatPanel', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it('switches the primary action into a stop button while resolving', () => {
+    const onStop = vi.fn();
+
+    render(
+      <ChatPanel
+        open
+        input="assign to Sarah"
+        history={[]}
+        canToggleMicrophone
+        microphoneEnabled={false}
+        isResolving
+        onInputChange={() => {}}
+        onMicrophoneToggle={() => {}}
+        onSubmit={() => {}}
+        onStop={onStop}
+        onOpenChange={() => {}}
+        onClearHistory={() => {}}
+        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText('Stop command'));
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
   it('closes on outside click when open', () => {
     const onOpenChange = vi.fn();
 

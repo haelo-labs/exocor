@@ -106,6 +106,8 @@ On mount, Exocor scans the wrapped subtree, builds runtime context, and discover
 
 When a command arrives, Exocor resolves it against the learned app model and any registered tools. If a safe explicit tool clearly fits, Exocor can execute it directly. Otherwise it plans against the learned app structure and falls back to DOM execution when needed.
 
+While a command is resolving or executing, the SDK chat UI can stop the active run cooperatively. Exocor halts future planning and steps, but it does not try to roll back host actions that already completed.
+
 The local development path uses `npx exocor dev` as a relay. Production integrations mount the resolver endpoint on your backend and keep execution inside the host app.
 
 ## Security Model

@@ -33,6 +33,13 @@ function normalizeBackendUrl(backendUrl?: string): string {
   return trimmed || DEFAULT_BACKEND_URL;
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
 function isLocalhostRuntime(): boolean {
   if (typeof window === 'undefined') {
     return false;
@@ -113,7 +120,8 @@ export class RemoteIntentResolver {
   }
 
   private async postJson<T extends ExocorResolverJsonResponse>(
-    request: ExocorResolverRequest
+    request: ExocorResolverRequest,
+    signal?: AbortSignal
   ): Promise<ExocorResolverEnvelope<T> | null> {
     try {
       const backendUrl = await this.resolveBackendUrl();
@@ -124,7 +132,8 @@ export class RemoteIntentResolver {
           'Content-Type': 'application/json',
           Accept: 'application/json'
         },
-        body: JSON.stringify(request)
+        body: JSON.stringify(request),
+        signal
       });
 
       const payload = await parseEnvelope<T>(response);
@@ -143,6 +152,9 @@ export class RemoteIntentResolver {
 
       return payload;
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       if (this.debug) {
         // eslint-disable-next-line no-console
         console.warn('[Exocor] Resolver request failed.', error);
@@ -151,11 +163,11 @@ export class RemoteIntentResolver {
     }
   }
 
-  async resolve(input: IntentResolutionInput): Promise<IntentPlan | null> {
+  async resolve(input: IntentResolutionInput, signal?: AbortSignal): Promise<IntentPlan | null> {
     const payload = await this.postJson<{ plan: IntentPlan | null }>({
       operation: 'resolve',
       input
-    } satisfies ExocorResolveRequest);
+    } satisfies ExocorResolveRequest, signal);
 
     if (!payload?.ok) {
       return null;
@@ -167,14 +179,15 @@ export class RemoteIntentResolver {
   async resolvePreferredToolIntent(
     input: IntentResolutionInput,
     preferredToolId: string,
-    preferredReason = ''
+    preferredReason = '',
+    signal?: AbortSignal
   ): Promise<ExocorPreferredToolIntentResult> {
     const payload = await this.postJson<{ result: ExocorPreferredToolIntentResult }>({
       operation: 'preferred_tool_intent',
       input,
       preferredToolId,
       ...(preferredReason ? { preferredReason } : {})
-    } satisfies ExocorPreferredToolIntentRequest);
+    } satisfies ExocorPreferredToolIntentRequest, signal);
 
     if (!payload?.ok) {
       return {
@@ -195,7 +208,8 @@ export class RemoteIntentResolver {
     input: IntentResolutionInput,
     preferredToolId: string,
     preferredReason: string,
-    rejectedPlan: IntentPlan
+    rejectedPlan: IntentPlan,
+    signal?: AbortSignal
   ): Promise<IntentStep[]> {
     const payload = await this.postJson<{ steps: IntentStep[] }>({
       operation: 'preferred_tool_retry',
@@ -203,7 +217,7 @@ export class RemoteIntentResolver {
       preferredToolId,
       preferredReason,
       rejectedPlan
-    } satisfies ExocorPreferredToolRetryRequest);
+    } satisfies ExocorPreferredToolRetryRequest, signal);
 
     if (!payload?.ok) {
       return [];
@@ -215,14 +229,15 @@ export class RemoteIntentResolver {
   async resolveForFailedStep(
     input: IntentResolutionInput,
     failedStep: IntentStep,
-    failureReason: string
+    failureReason: string,
+    signal?: AbortSignal
   ): Promise<IntentStep[]> {
     const payload = await this.postJson<{ steps: IntentStep[] }>({
       operation: 'failed_step',
       input,
       failedStep,
       failureReason
-    } satisfies ExocorFailedStepRequest);
+    } satisfies ExocorFailedStepRequest, signal);
 
     if (!payload?.ok) {
       return [];
@@ -234,14 +249,15 @@ export class RemoteIntentResolver {
   async resolveForNewElements(
     input: IntentResolutionInput,
     newElements: IntentResolutionInput['map']['elements'],
-    completedSteps: IntentStep[]
+    completedSteps: IntentStep[],
+    signal?: AbortSignal
   ): Promise<IntentStep[]> {
     const payload = await this.postJson<{ steps: IntentStep[] }>({
       operation: 'new_elements',
       input,
       newElements,
       completedSteps
-    } satisfies ExocorNewElementsRequest);
+    } satisfies ExocorNewElementsRequest, signal);
 
     if (!payload?.ok) {
       return [];
@@ -253,14 +269,15 @@ export class RemoteIntentResolver {
   async resolveFollowUp(
     input: IntentResolutionInput,
     completedSteps: IntentStep[],
-    instruction: string
+    instruction: string,
+    signal?: AbortSignal
   ): Promise<IntentStep[]> {
     const payload = await this.postJson<{ steps: IntentStep[] }>({
       operation: 'follow_up',
       input,
       completedSteps,
       instruction
-    } satisfies ExocorFollowUpRequest);
+    } satisfies ExocorFollowUpRequest, signal);
 
     if (!payload?.ok) {
       return [];
@@ -272,7 +289,8 @@ export class RemoteIntentResolver {
   async resolveWithContextStreamInternal(
     input: IntentResolutionInput,
     runtimeContext?: Record<string, unknown>,
-    callbacks: StreamResolveCallbacks = {}
+    callbacks: StreamResolveCallbacks = {},
+    signal?: AbortSignal
   ): Promise<ResolvedIntent> {
     try {
       const backendUrl = await this.resolveBackendUrl();
@@ -283,6 +301,7 @@ export class RemoteIntentResolver {
           'Content-Type': 'application/json',
           Accept: 'application/x-ndjson'
         },
+        signal,
         body: JSON.stringify({
           operation: 'initial_stream',
           input,
@@ -357,6 +376,9 @@ export class RemoteIntentResolver {
 
       return streamedResult;
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       if (this.debug) {
         // eslint-disable-next-line no-console
         console.warn('[Exocor] Streamed resolver request failed.', error);

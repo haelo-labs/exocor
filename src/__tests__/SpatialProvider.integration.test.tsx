@@ -168,7 +168,10 @@ vi.mock('../utils/mediapipe', () => ({
 
 vi.mock('../core/RemoteIntentResolver', () => ({
   RemoteIntentResolver: class {
-    async resolve(input: { command: string }) {
+    async resolve(input: { command: string }, signal?: AbortSignal) {
+      if (signal?.aborted) {
+        throw new DOMException('Stopped by user.', 'AbortError');
+      }
       return resolveSpy(input);
     }
 
@@ -178,8 +181,12 @@ vi.mock('../core/RemoteIntentResolver', () => ({
       callbacks?: {
         onResolutionPriority?: (priority: 'app_map_only' | 'route_then_dom' | 'dom_only') => void;
         onStep?: (step: any) => void;
-      }
+      },
+      signal?: AbortSignal
     ) {
+      if (signal?.aborted) {
+        throw new DOMException('Stopped by user.', 'AbortError');
+      }
       const resolved = await resolveStreamSpy(input, runtimeContext);
       if (resolved?.type === 'dom_steps') {
         callbacks?.onResolutionPriority?.(resolved.resolutionPriority);
@@ -188,19 +195,28 @@ vi.mock('../core/RemoteIntentResolver', () => ({
             ? Number((resolved as any).__streamStepDelayMs)
             : 0;
         for (const step of resolved.plan.steps) {
+          if (signal?.aborted) {
+            throw new DOMException('Stopped by user.', 'AbortError');
+          }
           if (stepDelayMs > 0) {
-            await new Promise((resolve) => {
-              window.setTimeout(resolve, stepDelayMs);
+            await new Promise((resolve, reject) => {
+              const timeoutId = window.setTimeout(() => {
+                signal?.removeEventListener('abort', onAbort);
+                resolve(undefined);
+              }, stepDelayMs);
+              const onAbort = (): void => {
+                window.clearTimeout(timeoutId);
+                signal?.removeEventListener('abort', onAbort);
+                reject(new DOMException('Stopped by user.', 'AbortError'));
+              };
+
+              signal?.addEventListener('abort', onAbort, { once: true });
             });
           }
           callbacks?.onStep?.(step);
         }
       }
       return resolved;
-    }
-
-    async resolveAdditionalSteps() {
-      return [];
     }
 
     async resolvePreferredToolIntent(...args: any[]) {
@@ -215,11 +231,15 @@ vi.mock('../core/RemoteIntentResolver', () => ({
       return resolveForFailedStepSpy(...args);
     }
 
-    async resolveForNewElements() {
-      return resolveForNewElementsSpy();
+    async resolveForNewElements(...args: any[]) {
+      return resolveForNewElementsSpy(...args);
     }
 
     async resolveFollowUp() {
+      return [];
+    }
+
+    async resolveAdditionalSteps() {
       return [];
     }
   }
@@ -909,6 +929,52 @@ describe('SpatialProvider integration', () => {
 
     const titleInput = screen.getByLabelText('Ticket Title') as HTMLInputElement;
     expect(titleInput.value.toLowerCase()).toContain('pump maintenance');
+  });
+
+  it('stops an active typed command before the next host action executes', async () => {
+    resolveStreamSpy.mockResolvedValueOnce({
+      type: 'dom_steps',
+      resolutionPriority: 'dom_only',
+      plan: {
+        source: 'claude',
+        rawCommand: 'assign to Alex',
+        confidence: 0.9,
+        steps: [
+          {
+            action: 'wait',
+            ms: 5000,
+            reason: 'waiting before filling assignee'
+          },
+          {
+            action: 'fill',
+            target: '#ticket-assignee',
+            value: 'Alex',
+            waitForDOM: false,
+            reason: 'filling assignee'
+          }
+        ]
+      }
+    });
+
+    render(
+      <SpatialProvider modalities={[]}>
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('assign to Alex');
+    await advanceUntil(() => {
+      expect(sdkQueries().getByLabelText('Stop command')).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Stop command'));
+    });
+
+    await advance(5200);
+
+    expect((screen.getByLabelText('Assignee') as HTMLInputElement).value).toBe('');
+    expect(sdkQueries().getAllByText('Stopped').length).toBeGreaterThan(0);
   });
 
   it('submits final voice transcripts immediately and cancels any pending silence submit', async () => {

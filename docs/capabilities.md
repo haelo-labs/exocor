@@ -18,7 +18,7 @@
 ## Planning And Execution
 - Builds an app map of routes, buttons, forms, tabs, filters, and reusable modal surfaces.
 - Prefers app-map-aware planning first, then uses live DOM execution where needed.
-- Supports streamed planning, clarification, stale-map refresh, and dynamic follow-up steps.
+- Supports streamed planning, clarification, stale-map refresh, dynamic follow-up steps, and cooperative stop from the SDK chat UI.
 
 ## Explicit Tools
 - Supports provider-level app-native tools passed to `SpatialProvider`.
@@ -34,6 +34,7 @@
 
 ## SDK UI
 - Renders chat, toasts, learning overlay, voice transcript, gaze overlay, and floating clarification UI.
+- Lets the user stop an active resolve or execute run from the chat panel without changing already-completed host actions.
 - Uses a shadow root so host CSS does not restyle the SDK.
 - Excludes SDK UI from DOM scanning and app-map discovery.
 

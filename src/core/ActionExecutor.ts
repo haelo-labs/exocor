@@ -20,6 +20,7 @@ interface ExecuteOptions {
   navigate?: (path: string) => boolean | Promise<boolean>;
   resolutionPriority?: ResolutionPriority;
   toolRegistry?: ToolRegistry;
+  signal?: AbortSignal;
 }
 
 interface ExecuteSequenceOptions extends ExecuteOptions {
@@ -117,15 +118,45 @@ const SUBMIT_LIKE_KEYWORDS = [
   'send'
 ] as const;
 
+function createAbortError(): DOMException {
+  return new DOMException('Stopped by user.', 'AbortError');
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
 interface SubmitLikeCompletionContext {
   step: IntentStep;
   locatorKind?: AppMapLocatorKind;
   resolvedTargetLabel?: string | null;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    throwIfAborted(signal);
+    const timeoutId = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      window.clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onAbort);
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 
@@ -1392,7 +1423,8 @@ function mutationTouchesHost(records: MutationRecord[]): boolean {
   return false;
 }
 
-async function waitForUiSettled(beforeSignature: string, mode: UiSettleMode): Promise<boolean> {
+async function waitForUiSettled(beforeSignature: string, mode: UiSettleMode, signal?: AbortSignal): Promise<boolean> {
+  throwIfAborted(signal);
   const observerTarget = document.body || document.documentElement;
   if (!observerTarget) {
     await waitForRenderFrames(UI_SETTLED_RENDER_FRAMES);
@@ -1422,6 +1454,7 @@ async function waitForUiSettled(beforeSignature: string, mode: UiSettleMode): Pr
 
   try {
     while (Date.now() - startedAt < WAIT_FOR_UI_SETTLED_TIMEOUT_MS) {
+      throwIfAborted(signal);
       const signature = domSignature();
       if (signature !== lastSignature) {
         observedHostChange = true;
@@ -1433,6 +1466,7 @@ async function waitForUiSettled(beforeSignature: string, mode: UiSettleMode): Pr
       const ready = mode === 'mutation-required' ? observedHostChange && quietWindowSatisfied : quietWindowSatisfied;
       if (ready) {
         await waitForRenderFrames(UI_SETTLED_RENDER_FRAMES);
+        throwIfAborted(signal);
         const postFrameSignature = domSignature();
         if (postFrameSignature !== lastSignature) {
           observedHostChange = true;
@@ -1443,10 +1477,11 @@ async function waitForUiSettled(beforeSignature: string, mode: UiSettleMode): Pr
         return observedHostChange;
       }
 
-      await sleep(WAIT_FOR_UI_SETTLED_POLL_MS);
+      await sleep(WAIT_FOR_UI_SETTLED_POLL_MS, signal);
     }
 
     await waitForRenderFrames(UI_SETTLED_RENDER_FRAMES);
+    throwIfAborted(signal);
     return observedHostChange;
   } finally {
     observer.disconnect();
@@ -1671,7 +1706,8 @@ export class ActionExecutor {
       refreshMap: options.refreshMap,
       appMap: options.appMap,
       navigate: options.navigate,
-      resolutionPriority: options.resolutionPriority
+      resolutionPriority: options.resolutionPriority,
+      signal: options.signal
     });
 
     return {
@@ -1720,147 +1756,174 @@ export class ActionExecutor {
     const consumedSteps: IntentStep[] = [];
     const effectivePriority: ResolutionPriority = options.resolutionPriority || 'dom_only';
     const iterator = stepSource[Symbol.asyncIterator]();
+    let activeStep: IntentStep | undefined;
 
-    let index = 0;
-    let currentStepResult: IteratorResult<IntentStep>;
     try {
-      currentStepResult = await iterator.next();
-    } catch {
-      return {
-        executed: false,
-        reason: 'Step stream failed before execution started.',
-        completedSteps,
-        failedStepReason: 'Step stream failed before execution started.',
-        lastCompletedStep,
-        newElementsAfterWait: Array.from(newElementsBySelector.values())
-      };
-    }
-
-    while (!currentStepResult.done) {
-      const step = currentStepResult.value;
-      consumedSteps.push(step);
-      options.onProgress?.(`${step.reason || step.action}...`, step, index);
-
-      let beforeSignature = domSignature();
-      const allowSemanticFallback = effectivePriority === 'dom_only';
-      let execution = await this.executeStep(step, currentMap, resolutionContext, options, {
-        allowLiveLabelFallback: effectivePriority === 'dom_only',
-        allowSemanticFallback
-      });
-
-      if (!execution.executed && execution.targetNotFound && options.refreshMap) {
-        const previousMap = currentMap;
-        const refreshedMap = options.refreshMap();
-        currentMap = refreshedMap;
-        resolutionContext.liveSelectorMap = { ...currentMap.compressed.selectorMap };
-
-        const refreshedElements = diffNewElements(previousMap, refreshedMap);
-        for (const element of refreshedElements) {
-          newElementsBySelector.set(element.selector, element);
-        }
-
-        beforeSignature = domSignature();
-        execution = await this.executeStep(step, currentMap, resolutionContext, options, {
-          allowLiveLabelFallback: true,
-          allowSemanticFallback
-        });
-      }
-
-      if (!execution.executed) {
-        await closeStepIterator(iterator);
+      let index = 0;
+      let currentStepResult: IteratorResult<IntentStep>;
+      throwIfAborted(options.signal);
+      try {
+        currentStepResult = await iterator.next();
+      } catch {
         return {
           executed: false,
-          reason: execution.reason || 'Step execution failed.',
+          reason: 'Step stream failed before execution started.',
           completedSteps,
-          failedStep: step,
-          failedStepReason: execution.reason || 'Step execution failed.',
+          failedStepReason: 'Step stream failed before execution started.',
           lastCompletedStep,
           newElementsAfterWait: Array.from(newElementsBySelector.values())
         };
       }
 
-      if (execution.valueChanged) {
-        fillValueChanged = true;
-      }
-      if (execution.submitLikeCompletionExecuted) {
-        submitLikeCompletionExecuted = true;
-      }
-      if (execution.trustedCompletionExecuted) {
-        trustedCompletionExecuted = true;
-      }
+      while (!currentStepResult.done) {
+        throwIfAborted(options.signal);
+        const step = currentStepResult.value;
+        activeStep = step;
+        consumedSteps.push(step);
+        options.onProgress?.(`${step.reason || step.action}...`, step, index);
 
-      completedSteps += 1;
-      lastCompletedStep = step;
+        let beforeSignature = domSignature();
+        const allowSemanticFallback = effectivePriority === 'dom_only';
+        let execution = await this.executeStep(step, currentMap, resolutionContext, options, {
+          allowLiveLabelFallback: effectivePriority === 'dom_only',
+          allowSemanticFallback
+        });
 
-      if (step.action !== 'wait') {
-        await waitForUiSettled(beforeSignature, execution.settleMode || (step.waitForDOM ? 'mutation-required' : 'quiet-only'));
-        if (options.refreshMap) {
+        if (!execution.executed && execution.targetNotFound && options.refreshMap) {
           const previousMap = currentMap;
           const refreshedMap = options.refreshMap();
           currentMap = refreshedMap;
           resolutionContext.liveSelectorMap = { ...currentMap.compressed.selectorMap };
 
-          const newElements = diffNewElements(previousMap, refreshedMap);
-          for (const element of newElements) {
+          const refreshedElements = diffNewElements(previousMap, refreshedMap);
+          for (const element of refreshedElements) {
             newElementsBySelector.set(element.selector, element);
           }
+
+          beforeSignature = domSignature();
+          execution = await this.executeStep(step, currentMap, resolutionContext, options, {
+            allowLiveLabelFallback: true,
+            allowSemanticFallback
+          });
         }
+
+        if (!execution.executed) {
+          await closeStepIterator(iterator);
+          return {
+            executed: false,
+            reason: execution.reason || 'Step execution failed.',
+            completedSteps,
+            failedStep: step,
+            failedStepReason: execution.reason || 'Step execution failed.',
+            lastCompletedStep,
+            newElementsAfterWait: Array.from(newElementsBySelector.values())
+          };
+        }
+
+        if (execution.valueChanged) {
+          fillValueChanged = true;
+        }
+        if (execution.submitLikeCompletionExecuted) {
+          submitLikeCompletionExecuted = true;
+        }
+        if (execution.trustedCompletionExecuted) {
+          trustedCompletionExecuted = true;
+        }
+
+        completedSteps += 1;
+        lastCompletedStep = step;
+        activeStep = undefined;
+
+        if (step.action !== 'wait') {
+          await waitForUiSettled(
+            beforeSignature,
+            execution.settleMode || (step.waitForDOM ? 'mutation-required' : 'quiet-only'),
+            options.signal
+          );
+          if (options.refreshMap) {
+            const previousMap = currentMap;
+            const refreshedMap = options.refreshMap();
+            currentMap = refreshedMap;
+            resolutionContext.liveSelectorMap = { ...currentMap.compressed.selectorMap };
+
+            const newElements = diffNewElements(previousMap, refreshedMap);
+            for (const element of newElements) {
+              newElementsBySelector.set(element.selector, element);
+            }
+          }
+        }
+
+        let nextStepResult: IteratorResult<IntentStep>;
+        try {
+          throwIfAborted(options.signal);
+          nextStepResult = await iterator.next();
+        } catch {
+          await closeStepIterator(iterator);
+          return {
+            executed: false,
+            reason: 'Step stream failed during execution.',
+            completedSteps,
+            failedStepReason: 'Step stream failed during execution.',
+            lastCompletedStep,
+            newElementsAfterWait: Array.from(newElementsBySelector.values())
+          };
+        }
+
+        if (!nextStepResult.done && step.action !== 'wait') {
+          await sleep(step.ms ?? options.defaultDelayMs ?? DEFAULT_STEP_DELAY_MS, options.signal);
+        }
+
+        currentStepResult = nextStepResult;
+        index += 1;
       }
 
-      let nextStepResult: IteratorResult<IntentStep>;
-      try {
-        nextStepResult = await iterator.next();
-      } catch {
-        await closeStepIterator(iterator);
+      throwIfAborted(options.signal);
+      const stepsForSuccessCheck = plannedSteps || consumedSteps;
+      const afterSequence = captureDOMSnapshot();
+      const strictCheck = evaluateStrictSuccess(
+        options.originalIntent || '',
+        stepsForSuccessCheck,
+        beforeSequence,
+        afterSequence,
+        fillValueChanged,
+        submitLikeCompletionExecuted,
+        trustedCompletionExecuted,
+        lastCompletedStep
+      );
+
+      if (!strictCheck.success) {
         return {
           executed: false,
-          reason: 'Step stream failed during execution.',
+          reason: strictCheck.message,
           completedSteps,
-          failedStepReason: 'Step stream failed during execution.',
+          failedStepReason: strictCheck.message,
           lastCompletedStep,
           newElementsAfterWait: Array.from(newElementsBySelector.values())
         };
       }
 
-      if (!nextStepResult.done && step.action !== 'wait') {
-        await sleep(step.ms ?? options.defaultDelayMs ?? DEFAULT_STEP_DELAY_MS);
+      return {
+        executed: true,
+        completedSteps,
+        successDescription: strictCheck.message,
+        lastCompletedStep,
+        newElementsAfterWait: Array.from(newElementsBySelector.values())
+      };
+    } catch (error) {
+      if (!isAbortError(error)) {
+        throw error;
       }
-
-      currentStepResult = nextStepResult;
-      index += 1;
-    }
-
-    const stepsForSuccessCheck = plannedSteps || consumedSteps;
-    const afterSequence = captureDOMSnapshot();
-    const strictCheck = evaluateStrictSuccess(
-      options.originalIntent || '',
-      stepsForSuccessCheck,
-      beforeSequence,
-      afterSequence,
-      fillValueChanged,
-      submitLikeCompletionExecuted,
-      trustedCompletionExecuted,
-      lastCompletedStep
-    );
-
-    if (!strictCheck.success) {
+      await closeStepIterator(iterator);
       return {
         executed: false,
-        reason: strictCheck.message,
+        reason: 'Stopped by user.',
         completedSteps,
-        failedStepReason: strictCheck.message,
+        failedStep: activeStep,
+        failedStepReason: 'Stopped by user.',
         lastCompletedStep,
         newElementsAfterWait: Array.from(newElementsBySelector.values())
       };
     }
-
-    return {
-      executed: true,
-      completedSteps,
-      successDescription: strictCheck.message,
-      lastCompletedStep,
-      newElementsAfterWait: Array.from(newElementsBySelector.values())
-    };
   }
 
   private async executeStep(
@@ -1870,6 +1933,7 @@ export class ActionExecutor {
     options: ExecuteSequenceOptions,
     resolutionPolicy: ResolutionPolicy
   ): Promise<StepResult> {
+    throwIfAborted(options.signal);
     // eslint-disable-next-line no-console
     console.log('[Exocor] Executing step:', JSON.stringify(step));
     if (this.debug) {
@@ -1879,7 +1943,7 @@ export class ActionExecutor {
 
     switch (step.action) {
       case 'wait': {
-        await sleep(step.ms ?? DEFAULT_STEP_DELAY_MS);
+        await sleep(step.ms ?? DEFAULT_STEP_DELAY_MS, options.signal);
         return { executed: true };
       }
       case 'click': {
@@ -1912,7 +1976,7 @@ export class ActionExecutor {
 
         if (isCustomDropdownElement(element)) {
           dispatchDropdownEventSequence(element);
-          await sleep(DROPDOWN_INTERACTION_DELAY_MS);
+          await sleep(DROPDOWN_INTERACTION_DELAY_MS, options.signal);
 
           if (step.value) {
             const option = findDropdownOptionElement(element, step.value);
@@ -1921,7 +1985,7 @@ export class ActionExecutor {
             }
 
             dispatchDropdownEventSequence(option);
-            await sleep(DROPDOWN_INTERACTION_DELAY_MS);
+            await sleep(DROPDOWN_INTERACTION_DELAY_MS, options.signal);
           }
 
           return {
@@ -1993,10 +2057,11 @@ export class ActionExecutor {
         const waitForExpectedPath = async (): Promise<boolean> => {
           const startedAt = Date.now();
           while (Date.now() - startedAt <= WAIT_FOR_ROUTE_TIMEOUT_MS) {
+            throwIfAborted(options.signal);
             if (normalizePath(window.location.pathname) === expectedPath) {
               return true;
             }
-            await sleep(WAIT_FOR_ROUTE_POLL_MS);
+            await sleep(WAIT_FOR_ROUTE_POLL_MS, options.signal);
           }
           return normalizePath(window.location.pathname) === expectedPath;
         };
