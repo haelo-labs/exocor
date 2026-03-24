@@ -471,7 +471,7 @@ function ChatPanelContent({
                   <button
                     key={modality.key}
                     {...SDK_UI_MARKER}
-                    data-exocor-text="ui-body-sm"
+                    data-exocor-text="caption-bold"
                     type="button"
                     onClick={onMicrophoneToggle}
                     aria-label={microphoneEnabled ? 'Turn microphone off' : 'Turn microphone on'}
@@ -488,7 +488,7 @@ function ChatPanelContent({
               }
 
               return (
-                <span key={modality.key} {...SDK_UI_MARKER} data-exocor-text="ui-body-sm" style={pillStyle}>
+                <span key={modality.key} {...SDK_UI_MARKER} data-exocor-text="caption-bold" style={pillStyle}>
                   {content}
                 </span>
               );

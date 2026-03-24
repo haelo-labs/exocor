@@ -52,7 +52,17 @@ export const SDK_LIGHT_DOM_STYLES = `
     font-style: normal !important;
     font-weight: 400 !important;
     line-height: 140% !important;
-    letter-spacing: -0.12px !important;
+    letter-spacing: 0.06px !important;
+  }
+
+  [data-exocor-ui='true'] [data-exocor-text='caption-bold'],
+  [data-exocor-ui='true'] [data-exocor-text='caption-bold'] * {
+    font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+    font-size: 12px !important;
+    font-style: normal !important;
+    font-weight: 500 !important;
+    line-height: normal !important;
+    letter-spacing: 0.06px !important;
   }
 
   [data-exocor-ui='true'] [data-exocor-text='intent-title'] {
@@ -87,9 +97,9 @@ export const SDK_LIGHT_DOM_STYLES = `
     font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
     font-size: 12px !important;
     font-style: normal !important;
-    font-weight: 400 !important;
+    font-weight: 300 !important;
     line-height: 140% !important;
-    letter-spacing: -0.12px !important;
+    letter-spacing: 0.06px !important;
   }
 
   [data-exocor-ui='true'] [data-exocor-text='learning-overlay'],
