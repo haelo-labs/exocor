@@ -56,7 +56,7 @@ export function FloatingClarification({
             fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
             fontSize: 20,
             lineHeight: '28px',
-            fontWeight: theme.clarificationTextWeight,
+            fontWeight: 400,
             letterSpacing: '-0.2px',
             whiteSpace: 'normal',
             wordBreak: 'break-word'

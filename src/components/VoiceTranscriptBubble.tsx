@@ -48,7 +48,7 @@ export function VoiceTranscriptBubble({
         fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         fontSize: 12,
         lineHeight: 'normal',
-        fontWeight: 500,
+        fontWeight: 400,
         letterSpacing: '0.06px',
         padding: '4px 8px',
         whiteSpace: 'normal',

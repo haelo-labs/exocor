@@ -61,7 +61,7 @@ export function StatusToast({
           fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
           fontSize: 14,
           lineHeight: 'normal',
-          fontWeight: 500,
+          fontWeight: 400,
           letterSpacing: '-0.07px',
           transform: open ? 'translateY(0)' : 'translateY(-12px)',
           opacity: open ? 1 : 0,

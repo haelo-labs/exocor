@@ -450,7 +450,7 @@ function ChatPanelContent({
                 fontFamily: GEIST_FONT,
                 fontSize: 12,
                 lineHeight: 'normal',
-                fontWeight: 500,
+                fontWeight: 400,
                 letterSpacing: '0.06px'
               };
 
@@ -653,7 +653,7 @@ function ChatPanelContent({
                                 fontFamily: GEIST_FONT,
                                 fontSize: 14,
                                 lineHeight: 'normal',
-                                fontWeight: 500,
+                                fontWeight: 400,
                                 letterSpacing: '-0.07px'
                               }}
                             >
@@ -670,7 +670,7 @@ function ChatPanelContent({
                                 fontFamily: GEIST_FONT,
                                 fontSize: 12,
                                 lineHeight: 'normal',
-                                fontWeight: 500,
+                                fontWeight: 400,
                                 letterSpacing: '0.06px'
                               }}
                             >
@@ -693,7 +693,7 @@ function ChatPanelContent({
                               fontFamily: GEIST_FONT,
                               fontSize: 13,
                               lineHeight: 'normal',
-                              fontWeight: 500,
+                              fontWeight: 400,
                               letterSpacing: '0.065px'
                             }}
                           >
@@ -738,55 +738,70 @@ function ChatPanelContent({
                                   {...SDK_UI_MARKER}
                                   style={{
                                     display: 'flex',
-                                    alignItems: 'stretch',
+                                    alignItems: 'flex-start',
                                     gap: 8,
                                     width: '100%'
                                   }}
                                 >
                                   <div
                                     {...SDK_UI_MARKER}
-                                    style={{
-                                      display: 'flex',
-                                      flexDirection: 'column',
-                                      alignItems: 'center',
-                                      flex: '0 0 14px',
-                                      alignSelf: 'stretch'
-                                    }}
-                                  >
-                                    <div
-                                      {...SDK_UI_MARKER}
                                       style={{
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        alignItems: 'center',
+                                        flex: '0 0 14px',
+                                        alignSelf: 'stretch'
+                                      }}
+                                    >
+                                      <div
+                                        {...SDK_UI_MARKER}
+                                        style={{
                                         width: 14,
                                         height: 17,
                                         display: 'flex',
                                         alignItems: 'center',
                                         justifyContent: 'center'
-                                      }}
-                                    >
-                                      <span
-                                        {...SDK_UI_MARKER}
-                                        aria-hidden="true"
-                                        style={{
-                                          width: 6,
-                                          height: 6,
-                                          borderRadius: '50%',
-                                          background: traceDotColor
                                         }}
-                                      />
+                                      >
+                                        <span
+                                          {...SDK_UI_MARKER}
+                                          aria-hidden="true"
+                                          style={{
+                                            width: 14,
+                                            height: 14,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            flexShrink: 0
+                                          }}
+                                        >
+                                          <span
+                                            {...SDK_UI_MARKER}
+                                            aria-hidden="true"
+                                            style={{
+                                              width: 6,
+                                              height: 6,
+                                              borderRadius: '50%',
+                                              background: traceDotColor,
+                                              flexShrink: 0
+                                            }}
+                                          />
+                                        </span>
+                                      </div>
+                                      {isLastTrace ? null : (
+                                        <span
+                                          {...SDK_UI_MARKER}
+                                          aria-hidden="true"
+                                          style={{
+                                            width: 1,
+                                            flex: 1,
+                                            minHeight: 1,
+                                            borderRadius: 999,
+                                            background: traceLineColor
+                                          }}
+                                        />
+                                      )}
                                     </div>
-                                    {isLastTrace ? null : (
-                                      <span
-                                        {...SDK_UI_MARKER}
-                                        aria-hidden="true"
-                                        style={{
-                                          width: 1,
-                                          flex: 1,
-                                          borderRadius: 999,
-                                          background: traceLineColor
-                                        }}
-                                      />
-                                    )}
-                                  </div>
 
                                   <div
                                     {...SDK_UI_MARKER}
@@ -797,7 +812,7 @@ function ChatPanelContent({
                                       fontFamily: GEIST_FONT,
                                       fontSize: 12,
                                       lineHeight: '140%',
-                                      fontWeight: 400,
+                                      fontWeight: 300,
                                       letterSpacing: '0.06px'
                                     }}
                                   >
@@ -814,7 +829,7 @@ function ChatPanelContent({
                                 fontFamily: GEIST_FONT,
                                 fontSize: 12,
                                 lineHeight: '140%',
-                                fontWeight: 400,
+                                fontWeight: 300,
                                 letterSpacing: '0.06px'
                               }}
                             >
@@ -846,7 +861,7 @@ function ChatPanelContent({
                       fontFamily: GEIST_FONT,
                       fontSize: 12,
                       lineHeight: 'normal',
-                      fontWeight: 500,
+                      fontWeight: 400,
                       letterSpacing: '0.06px'
                     }}
                   >
@@ -860,7 +875,7 @@ function ChatPanelContent({
                       fontFamily: GEIST_FONT,
                       fontSize: 14,
                       lineHeight: 'normal',
-                      fontWeight: 400,
+                      fontWeight: 300,
                       letterSpacing: '-0.07px'
                     }}
                   >
@@ -887,7 +902,7 @@ function ChatPanelContent({
                   fontFamily: GEIST_FONT,
                   fontSize: 12,
                   lineHeight: 'normal',
-                  fontWeight: 500,
+                  fontWeight: 400,
                   letterSpacing: '0.06px'
                 }}
               >
@@ -901,7 +916,7 @@ function ChatPanelContent({
                   fontFamily: GEIST_FONT,
                   fontSize: 14,
                   lineHeight: 'normal',
-                  fontWeight: 400,
+                  fontWeight: 300,
                   letterSpacing: '-0.07px'
                 }}
               >
@@ -922,7 +937,7 @@ function ChatPanelContent({
                 fontFamily: GEIST_FONT,
                 fontSize: 12,
                 lineHeight: 'normal',
-                fontWeight: 500,
+                fontWeight: 400,
                 letterSpacing: '0.06px',
                 marginBottom: 16
               }}
@@ -978,7 +993,7 @@ function ChatPanelContent({
                 fontFamily: GEIST_FONT,
                 fontSize: 14,
                 lineHeight: 'normal',
-                fontWeight: 400,
+                fontWeight: 300,
                 letterSpacing: '-0.07px'
               }}
             />
