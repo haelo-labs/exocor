@@ -446,12 +446,7 @@ function ChatPanelContent({
                 borderRadius: 999,
                 border: `0.5px solid ${borderColor}`,
                 background,
-                color: textColor,
-                fontFamily: GEIST_FONT,
-                fontSize: 12,
-                lineHeight: 'normal',
-                fontWeight: 400,
-                letterSpacing: '0.06px'
+                color: textColor
               };
 
               const content = (
@@ -666,12 +661,7 @@ function ChatPanelContent({
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: 8,
-                                color: theme.textSecondary,
-                                fontFamily: GEIST_FONT,
-                                fontSize: 12,
-                                lineHeight: 'normal',
-                                fontWeight: 400,
-                                letterSpacing: '0.06px'
+                                color: theme.textSecondary
                               }}
                             >
                               <span {...SDK_UI_MARKER}>{methodLabel}</span>
@@ -689,12 +679,7 @@ function ChatPanelContent({
                               display: 'flex',
                               alignItems: 'center',
                               gap: 8,
-                              color: theme.statusLineColor,
-                              fontFamily: GEIST_FONT,
-                              fontSize: 13,
-                              lineHeight: 'normal',
-                              fontWeight: 400,
-                              letterSpacing: '0.065px'
+                              color: theme.statusLineColor
                             }}
                           >
                             {renderStatusIcon(status, resultIconColor)}
@@ -805,15 +790,11 @@ function ChatPanelContent({
 
                                   <div
                                     {...SDK_UI_MARKER}
+                                    data-exocor-text="intent-detail"
                                     style={{
                                       flex: 1,
                                       paddingBottom: isLastTrace ? 0 : 8,
-                                      color: traceTextColor,
-                                      fontFamily: GEIST_FONT,
-                                      fontSize: 12,
-                                      lineHeight: '140%',
-                                      fontWeight: 300,
-                                      letterSpacing: '0.06px'
+                                      color: traceTextColor
                                     }}
                                   >
                                     {traceLabel}
@@ -824,13 +805,9 @@ function ChatPanelContent({
                           ) : (
                             <div
                               {...SDK_UI_MARKER}
+                              data-exocor-text="intent-detail"
                               style={{
-                                color: traceTextColor,
-                                fontFamily: GEIST_FONT,
-                                fontSize: 12,
-                                lineHeight: '140%',
-                                fontWeight: 300,
-                                letterSpacing: '0.06px'
+                                color: traceTextColor
                               }}
                             >
                               No trace captured.
@@ -857,12 +834,7 @@ function ChatPanelContent({
                     {...SDK_UI_MARKER}
                     data-exocor-text="intent-detail"
                     style={{
-                      color: theme.textMuted,
-                      fontFamily: GEIST_FONT,
-                      fontSize: 12,
-                      lineHeight: 'normal',
-                      fontWeight: 400,
-                      letterSpacing: '0.06px'
+                      color: theme.textMuted
                     }}
                   >
                     Clarification needed
@@ -898,12 +870,7 @@ function ChatPanelContent({
                 {...SDK_UI_MARKER}
                 data-exocor-text="intent-detail"
                 style={{
-                  color: theme.textMuted,
-                  fontFamily: GEIST_FONT,
-                  fontSize: 12,
-                  lineHeight: 'normal',
-                  fontWeight: 400,
-                  letterSpacing: '0.06px'
+                  color: theme.textMuted
                 }}
               >
                 Clarification needed
@@ -934,11 +901,6 @@ function ChatPanelContent({
                 padding: 16,
                 color: theme.textMuted,
                 textAlign: 'center',
-                fontFamily: GEIST_FONT,
-                fontSize: 12,
-                lineHeight: 'normal',
-                fontWeight: 400,
-                letterSpacing: '0.06px',
                 marginBottom: 16
               }}
             >
