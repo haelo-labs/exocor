@@ -39,7 +39,7 @@ export function LearningOverlay({
         aria-live="polite"
         style={{
           display: 'inline-flex',
-          alignItems: 'baseline',
+          alignItems: 'center',
           justifyContent: 'center',
           color: theme.textPrimary,
           fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -50,18 +50,7 @@ export function LearningOverlay({
           whiteSpace: 'nowrap'
         }}
       >
-        <span {...SDK_UI_MARKER}>Learning your app</span>
-        <span {...SDK_UI_MARKER} aria-hidden="true" style={{ display: 'inline-flex' }}>
-          <span {...SDK_UI_MARKER} style={{ animation: 'exocor-learning-dot-1 1.2s infinite steps(1, end)' }}>
-            .
-          </span>
-          <span {...SDK_UI_MARKER} style={{ animation: 'exocor-learning-dot-2 1.2s infinite steps(1, end)' }}>
-            .
-          </span>
-          <span {...SDK_UI_MARKER} style={{ animation: 'exocor-learning-dot-3 1.2s infinite steps(1, end)' }}>
-            .
-          </span>
-        </span>
+        <span {...SDK_UI_MARKER}>Learning your app...</span>
       </div>
     </div>
   );

@@ -26,6 +26,7 @@ export function VoiceTranscriptBubble({
 
   const anchorX = Number.isFinite(x) ? Math.round(x + 22) : 20;
   const anchorY = Number.isFinite(y) ? Math.round(y - 16) : 20;
+  const bubbleShadow = themeMode === 'light' ? '1px 2px 8px rgba(0, 0, 0, 0.18)' : 'none';
 
   return (
     <div
@@ -40,16 +41,16 @@ export function VoiceTranscriptBubble({
         pointerEvents: 'none',
         maxWidth: 300,
         borderRadius: 8,
-        border: `1px solid ${theme.panelBorder}`,
+        border: `0.5px solid ${theme.panelBorder}`,
         background: theme.panelSurface,
         color: theme.textPrimary,
-        boxShadow: theme.entryPointShadow,
+        boxShadow: bubbleShadow,
         fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         fontSize: 12,
-        lineHeight: '1.4',
-        fontWeight: 400,
-        letterSpacing: '-0.12px',
-        padding: '4px 8px 5px',
+        lineHeight: 'normal',
+        fontWeight: 500,
+        letterSpacing: '0.06px',
+        padding: '4px 8px',
         whiteSpace: 'normal',
         wordBreak: 'break-word'
       }}

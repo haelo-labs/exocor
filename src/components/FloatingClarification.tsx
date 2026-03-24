@@ -18,6 +18,8 @@ export function FloatingClarification({
   }
 
   const theme = resolveSdkTheme(themeMode);
+  const borderRadius = themeMode === 'light' ? 24 : 16;
+  const padding = themeMode === 'light' ? '16px 24px' : '16px 24px 17px';
 
   return (
     <div
@@ -37,12 +39,12 @@ export function FloatingClarification({
         style={{
           display: 'inline-flex',
           alignItems: 'flex-start',
-          borderRadius: 16,
-          border: `1px solid ${theme.clarificationBorder}`,
+          borderRadius,
+          border: `0.5px solid ${theme.clarificationBorder}`,
           background: theme.clarificationSurface,
           boxShadow: theme.clarificationShadow,
           color: theme.textPrimary,
-          padding: themeMode === 'light' ? '16px 24px' : '16px 24px 17px',
+          padding,
           maxWidth: 'min(760px, calc(100vw - 48px))'
         }}
       >

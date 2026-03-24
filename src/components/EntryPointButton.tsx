@@ -19,6 +19,7 @@ export function EntryPointButton({
 }: EntryPointButtonProps): JSX.Element {
   const theme = resolveSdkTheme(themeMode);
   const [isHovered, setIsHovered] = useState(false);
+  const closeIconSize = themeMode === 'light' ? 16 : 20;
 
   return (
     <div
@@ -46,7 +47,7 @@ export function EntryPointButton({
           width: 48,
           height: 48,
           borderRadius: 16,
-          border: `1px solid ${theme.panelBorder}`,
+          border: `0.5px solid ${theme.panelBorder}`,
           background: isHovered ? theme.hoverSurface : theme.panelSurface,
           boxShadow: theme.entryPointShadow,
           cursor: 'pointer',
@@ -55,7 +56,7 @@ export function EntryPointButton({
           transition: 'background-color 150ms ease, border-color 150ms ease, transform 120ms ease'
         }}
       >
-        {open ? <CloseIcon size={20} color={theme.textPrimary} /> : <StatusIndicator status={status} themeMode={themeMode} />}
+        {open ? <CloseIcon size={closeIconSize} color={theme.textPrimary} /> : <StatusIndicator status={status} themeMode={themeMode} />}
       </button>
     </div>
   );

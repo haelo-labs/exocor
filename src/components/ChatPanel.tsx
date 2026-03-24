@@ -56,6 +56,9 @@ const INPUT_METHOD_LABELS: Record<CommandInputMethod, string> = {
   gaze: 'Gaze'
 };
 
+const GEIST_FONT = '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const PANEL_WIDTH = 'min(400px, calc(100vw - 48px))';
+
 const HIDDEN_CONTROL_STYLE: React.CSSProperties = {
   position: 'absolute',
   width: 1,
@@ -92,9 +95,9 @@ class ChatPanelErrorBoundary extends React.Component<{ children: React.ReactNode
           {...SDK_UI_MARKER}
           style={{
             position: 'fixed',
-            right: 20,
-            bottom: 88,
-            width: 'min(392px, calc(100vw - 24px))',
+            right: 24,
+            bottom: 80,
+            width: PANEL_WIDTH,
             zIndex: 2147483646,
             pointerEvents: 'none'
           }}
@@ -103,13 +106,17 @@ class ChatPanelErrorBoundary extends React.Component<{ children: React.ReactNode
             {...SDK_UI_MARKER}
             style={{
               pointerEvents: 'auto',
-              borderRadius: 12,
-              border: '1px solid rgba(100, 118, 146, 0.48)',
-              background: 'rgba(12, 19, 30, 0.95)',
-              color: '#d9eeff',
-              padding: '8px 12px',
+              borderRadius: 16,
+              border: '0.5px solid rgba(255, 255, 255, 0.1)',
+              background: '#262626',
+              color: '#f4f4f4',
+              padding: '12px 16px',
+              fontFamily: GEIST_FONT,
               fontSize: 12,
-              lineHeight: '16px'
+              lineHeight: '140%',
+              fontWeight: 500,
+              letterSpacing: '0.06px',
+              boxShadow: '-2px 4px 24px rgba(0, 0, 0, 0.35)'
             }}
           >
             Exocor command panel unavailable.
@@ -144,12 +151,12 @@ function formatRelativeTimestamp(timestamp: number, now: number): string {
 
 function renderStatusIcon(status: Exclude<CommandHistoryStatus, 'clarification'>, color: string): JSX.Element {
   if (status === 'done') {
-    return <CircleCheckIcon size={12} color={color} />;
+    return <CircleCheckIcon size={14} color={color} />;
   }
   if (status === 'failed') {
-    return <CircleXIcon size={12} color={color} />;
+    return <CircleXIcon size={14} color={color} />;
   }
-  return <LoadingIcon size={12} color={color} animated />;
+  return <LoadingIcon size={14} color={color} animated />;
 }
 
 function fallbackStatusMessage(status: Exclude<CommandHistoryStatus, 'clarification'>): string {
@@ -192,6 +199,7 @@ function ChatPanelContent({
   const [isSendPressed, setIsSendPressed] = useState(false);
   const [isClearHovered, setIsClearHovered] = useState(false);
   const [isClearPressed, setIsClearPressed] = useState(false);
+  const [isVoiceToggleHovered, setIsVoiceToggleHovered] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -304,13 +312,11 @@ function ChatPanelContent({
     });
   };
 
-  const sendButtonBackground = !canSubmit
-    ? theme.sendButtonSurface
-    : isSendPressed
-      ? theme.sendButtonPressedSurface
-      : isSendHovered
-        ? theme.sendButtonHoverSurface
-        : theme.sendButtonSurface;
+  const sendButtonBackground = isSendPressed
+    ? theme.sendButtonPressedSurface
+    : isSendHovered
+      ? theme.sendButtonHoverSurface
+      : theme.sendButtonSurface;
   const sendButtonIconColor = canSubmit ? theme.sendButtonActiveIcon : theme.sendButtonInactiveIcon;
   const clearButtonBackground = isClearPressed
     ? theme.clearButtonPressedSurface
@@ -333,14 +339,20 @@ function ChatPanelContent({
     [canToggleMicrophone, modalitiesStatus.gaze, modalitiesStatus.gesture, modalitiesStatus.voice]
   );
 
+  const detailHorizontalPadding = theme.mode === 'light' ? 12 : 8;
+  const traceLineColor = theme.mode === 'light' ? '#c6c6c6' : '#6f6f6f';
+  const traceDotColor = theme.mode === 'light' ? '#a8a8a8' : '#c6c6c6';
+  const traceTextColor = theme.mode === 'light' ? '#262626' : theme.textPrimary;
+  const historyGap = theme.mode === 'light' ? 16 : 12;
+
   return (
     <div
       {...SDK_UI_MARKER}
       style={{
         position: 'fixed',
-        right: 16,
+        right: 24,
         bottom: 80,
-        width: 'min(400px, calc(100vw - 32px))',
+        width: PANEL_WIDTH,
         zIndex: 2147483646,
         pointerEvents: 'none'
       }}
@@ -355,19 +367,20 @@ function ChatPanelContent({
           pointerEvents: open ? 'auto' : 'none',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 24,
-          border: `1px solid ${theme.panelBorder}`,
+          borderRadius: 32,
+          border: `0.5px solid ${theme.panelBorder}`,
           background: theme.panelSurface,
           color: theme.textPrimary,
           boxShadow: theme.panelShadow,
           overflow: 'hidden',
-          maxHeight: 'min(441px, calc(100vh - 120px))',
+          maxHeight: 'min(520px, calc(100vh - 120px))',
           transform: open ? 'translateY(0) scale(1)' : 'translateY(18px) scale(0.985)',
           opacity: open ? 1 : 0,
           transition: 'transform 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease'
         }}
       >
         <button {...SDK_UI_MARKER} type="button" aria-label="Close command panel" onClick={() => onOpenChange(false)} style={HIDDEN_CONTROL_STYLE} />
+
         <div
           {...SDK_UI_MARKER}
           style={{
@@ -380,34 +393,66 @@ function ChatPanelContent({
         >
           <div {...SDK_UI_MARKER} style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {modalityEntries.map((modality) => {
-              const sharedStyle: React.CSSProperties = {
+              const isHovered = modality.key === 'voice' && isVoiceToggleHovered;
+              const isActive = modality.enabled;
+              const background = isActive
+                ? theme.mode === 'light'
+                  ? isHovered
+                    ? 'rgba(36, 161, 72, 0.4)'
+                    : theme.toggleActiveBackground
+                  : isHovered
+                    ? '#044317'
+                    : theme.toggleActiveBackground
+                : theme.mode === 'light'
+                  ? isHovered
+                    ? '#e0e0e0'
+                    : theme.toggleInactiveBackground
+                  : isHovered
+                    ? '#262626'
+                    : theme.toggleInactiveBackground;
+              const borderColor = isActive
+                ? theme.mode === 'light'
+                  ? 'rgba(36, 161, 72, 0.08)'
+                  : isHovered
+                    ? '#0e6027'
+                    : '#198038'
+                : theme.panelBorder;
+              const textColor = isActive ? theme.toggleActiveText : theme.toggleInactiveText;
+              const dotColor = isActive ? theme.status.listening.dot : theme.status.idle.dot;
+              const pillStyle: React.CSSProperties = {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: 4,
                 minHeight: 24,
-                padding: '4px 8px',
-                borderRadius: 8,
-                border: 'none',
-                background: modality.enabled ? theme.toggleActiveBackground : theme.toggleInactiveBackground,
-                color: modality.enabled ? theme.toggleActiveText : theme.toggleInactiveText,
-                fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+                padding: '4px 8px 4px 7px',
+                borderRadius: 999,
+                border: `0.5px solid ${borderColor}`,
+                background,
+                color: textColor,
+                fontFamily: GEIST_FONT,
                 fontSize: 12,
-                lineHeight: '140%',
-                fontWeight: 400,
-                letterSpacing: '-0.12px'
+                lineHeight: 'normal',
+                fontWeight: 500,
+                letterSpacing: '0.06px'
               };
 
-              const dotStyle: React.CSSProperties = {
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: modality.enabled
-                  ? themeMode === 'light'
-                    ? '#42be65'
-                    : '#24a148'
-                  : theme.textMuted
-              };
+              const content = (
+                <>
+                  <span
+                    {...SDK_UI_MARKER}
+                    aria-hidden="true"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: dotColor,
+                      flexShrink: 0
+                    }}
+                  />
+                  <span {...SDK_UI_MARKER}>{modality.label}</span>
+                </>
+              );
 
               if (modality.interactive) {
                 return (
@@ -418,21 +463,21 @@ function ChatPanelContent({
                     type="button"
                     onClick={onMicrophoneToggle}
                     aria-label={microphoneEnabled ? 'Turn microphone off' : 'Turn microphone on'}
+                    onPointerEnter={() => setIsVoiceToggleHovered(true)}
+                    onPointerLeave={() => setIsVoiceToggleHovered(false)}
                     style={{
-                      ...sharedStyle,
+                      ...pillStyle,
                       cursor: 'pointer'
                     }}
                   >
-                    <span {...SDK_UI_MARKER} aria-hidden="true" style={dotStyle} />
-                    {modality.label}
+                    {content}
                   </button>
                 );
               }
 
               return (
-                <span key={modality.key} {...SDK_UI_MARKER} data-exocor-text="ui-body-sm" style={sharedStyle}>
-                  <span {...SDK_UI_MARKER} aria-hidden="true" style={dotStyle} />
-                  {modality.label}
+                <span key={modality.key} {...SDK_UI_MARKER} data-exocor-text="ui-body-sm" style={pillStyle}>
+                  {content}
                 </span>
               );
             })}
@@ -471,21 +516,21 @@ function ChatPanelContent({
                 width: 24,
                 height: 24,
                 flex: '0 0 24px',
-                flexShrink: 0,
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 border: 'none',
-                borderRadius: 8,
+                borderRadius: 10,
                 background: clearButtonBackground,
                 color: clearButtonIconColor,
-                cursor: 'pointer'
+                cursor: 'pointer',
+                padding: 0
               }}
             >
               <TrashIcon size={16} color={clearButtonIconColor} style={{ display: 'block', flexShrink: 0 }} />
             </button>
           ) : (
-            <span {...SDK_UI_MARKER} />
+            <span {...SDK_UI_MARKER} style={{ width: 24, height: 24, flex: '0 0 24px' }} />
           )}
         </div>
 
@@ -514,170 +559,256 @@ function ChatPanelContent({
             >
               <div {...SDK_UI_MARKER} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {visibleHistory.map((item, index) => {
-              const safeItem = item && typeof item === 'object' ? (item as Partial<CommandHistoryItem>) : {};
-              const itemId = typeof safeItem.id === 'string' && safeItem.id ? safeItem.id : `history-${index}`;
-              const itemStatus = typeof safeItem.status === 'string' ? safeItem.status : 'executing';
-              const normalizedStatus = (['planning', 'executing', 'done', 'failed'].includes(itemStatus)
-                ? itemStatus
-                : itemStatus === 'clarification'
-                  ? 'clarification'
-                  : 'executing') as CommandHistoryStatus;
-              const itemInputMethod = typeof safeItem.inputMethod === 'string' ? safeItem.inputMethod : 'typed';
-              const itemCreatedAt = typeof safeItem.createdAt === 'number' ? safeItem.createdAt : clockNow;
-              const itemCommand = typeof safeItem.command === 'string' ? safeItem.command : '';
-              const itemMessage = typeof safeItem.message === 'string' ? safeItem.message : '';
-              const safeTraces = Array.isArray(safeItem.traces) ? safeItem.traces : [];
-              const isExpanded = Boolean(expandedItems[itemId]);
-              const methodLabel = INPUT_METHOD_LABELS[itemInputMethod as CommandInputMethod] ?? INPUT_METHOD_LABELS.typed;
-              const status = normalizedStatus as Exclude<CommandHistoryStatus, 'clarification'>;
-              const statusMessage = itemMessage || fallbackStatusMessage(status);
+                  const safeItem = item && typeof item === 'object' ? (item as Partial<CommandHistoryItem>) : {};
+                  const itemId = typeof safeItem.id === 'string' && safeItem.id ? safeItem.id : `history-${index}`;
+                  const itemStatus = typeof safeItem.status === 'string' ? safeItem.status : 'executing';
+                  const normalizedStatus = (['planning', 'executing', 'done', 'failed'].includes(itemStatus)
+                    ? itemStatus
+                    : itemStatus === 'clarification'
+                      ? 'clarification'
+                      : 'executing') as CommandHistoryStatus;
+                  const itemInputMethod = typeof safeItem.inputMethod === 'string' ? safeItem.inputMethod : 'typed';
+                  const itemCreatedAt = typeof safeItem.createdAt === 'number' ? safeItem.createdAt : clockNow;
+                  const itemCommand = typeof safeItem.command === 'string' ? safeItem.command : '';
+                  const itemMessage = typeof safeItem.message === 'string' ? safeItem.message : '';
+                  const safeTraces = Array.isArray(safeItem.traces) ? safeItem.traces : [];
+                  const isExpanded = Boolean(expandedItems[itemId]);
+                  const methodLabel =
+                    INPUT_METHOD_LABELS[itemInputMethod as CommandInputMethod] ?? INPUT_METHOD_LABELS.typed;
+                  const status = normalizedStatus as Exclude<CommandHistoryStatus, 'clarification'>;
+                  const statusMessage = itemMessage || fallbackStatusMessage(status);
+                  const resultIconColor =
+                    status === 'done'
+                      ? theme.status.listening.dot
+                      : status === 'failed'
+                        ? theme.toastFailedBorder
+                        : theme.statusLineColor;
 
-              return (
-                <div
-                  key={itemId}
-                  {...SDK_UI_MARKER}
-                  style={{
-                    borderRadius: 12,
-                    background: theme.panelInsetSurface,
-                    overflow: 'hidden'
-                  }}
-                >
-                  <button
-                    {...SDK_UI_MARKER}
-                    type="button"
-                    onClick={() =>
-                      setExpandedItems((previous) => ({
-                        ...previous,
-                        [itemId]: !previous[itemId]
-                      }))
-                    }
-                    style={{
-                      width: '100%',
-                      display: 'flex',
-                      alignItems: 'flex-end',
-                      gap: 12,
-                      padding: '12px 8px 12px 12px',
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      color: 'inherit'
-                    }}
-                  >
+                  return (
                     <div
+                      key={itemId}
                       {...SDK_UI_MARKER}
                       style={{
-                        flex: 1,
-                        minWidth: 0,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 8
+                        borderRadius: 16,
+                        background: theme.panelInsetSurface,
+                        border: `0.5px solid ${theme.panelBorder}`,
+                        overflow: 'hidden'
                       }}
                     >
-                      <div {...SDK_UI_MARKER} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        <div
-                          {...SDK_UI_MARKER}
-                          data-exocor-text="intent-title"
-                          style={{
-                            color: theme.textPrimary,
-                            fontSize: 13,
-                            lineHeight: 'normal',
-                            fontWeight: 400,
-                            letterSpacing: '-0.13px'
-                          }}
-                        >
-                          {itemCommand}
-                        </div>
-                        <div
-                          {...SDK_UI_MARKER}
-                          data-exocor-text="intent-detail"
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            color: theme.textMuted,
-                            fontSize: 12,
-                            lineHeight: '140%',
-                            letterSpacing: '-0.12px'
-                          }}
-                        >
-                          <span {...SDK_UI_MARKER}>{methodLabel}</span>
-                          <span {...SDK_UI_MARKER} aria-hidden="true">
-                            •
-                          </span>
-                          <span {...SDK_UI_MARKER}>{formatRelativeTimestamp(itemCreatedAt, clockNow)}</span>
-                        </div>
-                      </div>
-
-                      <div
+                      <button
                         {...SDK_UI_MARKER}
-                        data-exocor-text="intent-detail"
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            color: theme.statusLineColor,
-                            fontSize: 12,
-                            lineHeight: '140%',
-                            fontWeight: 400,
-                            letterSpacing: '-0.12px'
-                          }}
-                      >
-                        {renderStatusIcon(status, theme.statusLineColor)}
-                        <span {...SDK_UI_MARKER}>{statusMessage}</span>
-                      </div>
-                    </div>
-
-                    {isExpanded ? (
-                      <ChevronDownIcon size={16} color={theme.iconMuted} />
-                    ) : (
-                      <ChevronRightIcon size={16} color={theme.iconMuted} />
-                    )}
-                  </button>
-
-                  {isExpanded ? (
-                    <div {...SDK_UI_MARKER} style={{ padding: '0 4px 4px' }}>
-                      <div
-                        {...SDK_UI_MARKER}
-                        data-exocor-text="intent-detail"
+                        type="button"
+                        onClick={() =>
+                          setExpandedItems((previous) => ({
+                            ...previous,
+                            [itemId]: !previous[itemId]
+                          }))
+                        }
                         style={{
-                          borderRadius: 8,
-                          background: theme.panelNestedSurface,
-                          padding: '8px 8px 8px 24px',
-                          color: theme.textSubtle,
-                          fontSize: 12,
-                          lineHeight: '140%',
-                          fontWeight: 400,
-                          letterSpacing: '-0.12px',
+                          width: '100%',
                           display: 'flex',
-                          flexDirection: 'column',
-                          gap: 8
+                          alignItems: 'flex-end',
+                          gap: historyGap,
+                          padding: 12,
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          color: 'inherit'
                         }}
                       >
-                        {safeTraces.length ? (
-                          safeTraces.map((trace, traceIndex) => {
-                            const safeTrace = trace && typeof trace === 'object' ? (trace as Partial<CommandTraceItem>) : {};
-                            const traceId =
-                              typeof safeTrace.id === 'string' && safeTrace.id
-                                ? safeTrace.id
-                                : `${itemId}-trace-${traceIndex}`;
-                            const traceLabel = typeof safeTrace.label === 'string' ? safeTrace.label : 'Trace event';
+                        <div
+                          {...SDK_UI_MARKER}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8
+                          }}
+                        >
+                          <div {...SDK_UI_MARKER} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <div
+                              {...SDK_UI_MARKER}
+                              data-exocor-text="intent-title"
+                              style={{
+                                color: theme.textPrimary,
+                                fontFamily: GEIST_FONT,
+                                fontSize: 14,
+                                lineHeight: 'normal',
+                                fontWeight: 500,
+                                letterSpacing: '-0.07px'
+                              }}
+                            >
+                              {itemCommand}
+                            </div>
+                            <div
+                              {...SDK_UI_MARKER}
+                              data-exocor-text="intent-detail"
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                color: theme.textSecondary,
+                                fontFamily: GEIST_FONT,
+                                fontSize: 12,
+                                lineHeight: 'normal',
+                                fontWeight: 500,
+                                letterSpacing: '0.06px'
+                              }}
+                            >
+                              <span {...SDK_UI_MARKER}>{methodLabel}</span>
+                              <span {...SDK_UI_MARKER} aria-hidden="true">
+                                •
+                              </span>
+                              <span {...SDK_UI_MARKER}>{formatRelativeTimestamp(itemCreatedAt, clockNow)}</span>
+                            </div>
+                          </div>
 
-                            return (
-                              <div key={traceId} {...SDK_UI_MARKER}>
-                                {traceLabel}
-                              </div>
-                            );
-                          })
+                          <div
+                            {...SDK_UI_MARKER}
+                            data-exocor-text="intent-detail"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              color: theme.statusLineColor,
+                              fontFamily: GEIST_FONT,
+                              fontSize: 13,
+                              lineHeight: 'normal',
+                              fontWeight: 500,
+                              letterSpacing: '0.065px'
+                            }}
+                          >
+                            {renderStatusIcon(status, resultIconColor)}
+                            <span {...SDK_UI_MARKER}>{statusMessage}</span>
+                          </div>
+                        </div>
+
+                        {isExpanded ? (
+                          <ChevronDownIcon size={16} color={theme.iconMuted} />
                         ) : (
-                          <div {...SDK_UI_MARKER}>No trace captured.</div>
+                          <ChevronRightIcon size={16} color={theme.iconMuted} />
                         )}
-                      </div>
+                      </button>
+
+                      {isExpanded ? (
+                        <div
+                          {...SDK_UI_MARKER}
+                          style={{
+                            borderTop: `0.5px solid ${theme.panelBorder}`,
+                            background: theme.panelNestedSurface,
+                            padding: 12,
+                            display: 'flex',
+                            flexDirection: 'column'
+                          }}
+                        >
+                          {safeTraces.length ? (
+                            safeTraces.map((trace, traceIndex) => {
+                              const safeTrace =
+                                trace && typeof trace === 'object' ? (trace as Partial<CommandTraceItem>) : {};
+                              const traceId =
+                                typeof safeTrace.id === 'string' && safeTrace.id
+                                  ? safeTrace.id
+                                  : `${itemId}-trace-${traceIndex}`;
+                              const traceLabel =
+                                typeof safeTrace.label === 'string' ? safeTrace.label : 'Trace event';
+                              const isLastTrace = traceIndex === safeTraces.length - 1;
+
+                              return (
+                                <div
+                                  key={traceId}
+                                  {...SDK_UI_MARKER}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'stretch',
+                                    gap: 8,
+                                    width: '100%'
+                                  }}
+                                >
+                                  <div
+                                    {...SDK_UI_MARKER}
+                                    style={{
+                                      display: 'flex',
+                                      flexDirection: 'column',
+                                      alignItems: 'center',
+                                      flex: '0 0 14px',
+                                      alignSelf: 'stretch'
+                                    }}
+                                  >
+                                    <div
+                                      {...SDK_UI_MARKER}
+                                      style={{
+                                        width: 14,
+                                        height: 17,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center'
+                                      }}
+                                    >
+                                      <span
+                                        {...SDK_UI_MARKER}
+                                        aria-hidden="true"
+                                        style={{
+                                          width: 6,
+                                          height: 6,
+                                          borderRadius: '50%',
+                                          background: traceDotColor
+                                        }}
+                                      />
+                                    </div>
+                                    {isLastTrace ? null : (
+                                      <span
+                                        {...SDK_UI_MARKER}
+                                        aria-hidden="true"
+                                        style={{
+                                          width: 1,
+                                          flex: 1,
+                                          borderRadius: 999,
+                                          background: traceLineColor
+                                        }}
+                                      />
+                                    )}
+                                  </div>
+
+                                  <div
+                                    {...SDK_UI_MARKER}
+                                    style={{
+                                      flex: 1,
+                                      paddingBottom: isLastTrace ? 0 : 8,
+                                      color: traceTextColor,
+                                      fontFamily: GEIST_FONT,
+                                      fontSize: 12,
+                                      lineHeight: '140%',
+                                      fontWeight: 400,
+                                      letterSpacing: '0.06px'
+                                    }}
+                                  >
+                                    {traceLabel}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div
+                              {...SDK_UI_MARKER}
+                              style={{
+                                color: traceTextColor,
+                                fontFamily: GEIST_FONT,
+                                fontSize: 12,
+                                lineHeight: '140%',
+                                fontWeight: 400,
+                                letterSpacing: '0.06px'
+                              }}
+                            >
+                              No trace captured.
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
-                </div>
-              );
-            })}
+                  );
+                })}
               </div>
 
               {pendingClarificationQuestion ? (
@@ -687,18 +818,19 @@ function ChatPanelContent({
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 4,
-                    padding: '0 8px'
+                    padding: `0 ${detailHorizontalPadding}px`
                   }}
                 >
                   <div
                     {...SDK_UI_MARKER}
                     data-exocor-text="intent-detail"
                     style={{
-                      color: theme.textSecondary,
+                      color: theme.textMuted,
+                      fontFamily: GEIST_FONT,
                       fontSize: 12,
-                      lineHeight: '140%',
-                      fontWeight: 400,
-                      letterSpacing: '-0.12px'
+                      lineHeight: 'normal',
+                      fontWeight: 500,
+                      letterSpacing: '0.06px'
                     }}
                   >
                     Clarification needed
@@ -708,10 +840,11 @@ function ChatPanelContent({
                     data-exocor-text="chat-input"
                     style={{
                       color: theme.textPrimary,
+                      fontFamily: GEIST_FONT,
                       fontSize: 14,
                       lineHeight: 'normal',
-                      fontWeight: 300,
-                      letterSpacing: '-0.14px'
+                      fontWeight: 400,
+                      letterSpacing: '-0.07px'
                     }}
                   >
                     {pendingClarificationQuestion}
@@ -719,123 +852,117 @@ function ChatPanelContent({
                 </div>
               ) : null}
             </div>
-          ) : (
-            pendingClarificationQuestion ? (
-              <div
-                {...SDK_UI_MARKER}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                  padding: '0 8px 16px'
-                }}
-              >
-                <div
-                  {...SDK_UI_MARKER}
-                  data-exocor-text="intent-detail"
-                  style={{
-                    color: theme.textSecondary,
-                    fontSize: 12,
-                    lineHeight: '140%',
-                    fontWeight: 400,
-                    letterSpacing: '-0.12px'
-                  }}
-                >
-                  Clarification needed
-                </div>
-                <div
-                  {...SDK_UI_MARKER}
-                  data-exocor-text="chat-input"
-                  style={{
-                    color: theme.textPrimary,
-                    fontSize: 14,
-                    lineHeight: 'normal',
-                    fontWeight: 300,
-                    letterSpacing: '-0.14px'
-                  }}
-                >
-                  {pendingClarificationQuestion}
-                </div>
-              </div>
-            ) : (
-              <div
-                {...SDK_UI_MARKER}
-                data-exocor-text="ui-body-sm"
-                style={{
-                  borderRadius: 12,
-                  background: theme.panelInsetSurface,
-                  padding: 16,
-                  color: theme.textMuted,
-                  textAlign: 'center',
-                  fontSize: 12,
-                  lineHeight: '140%',
-                  fontWeight: 400,
-                  letterSpacing: '-0.12px',
-                  marginBottom: 16
-                }}
-              >
-                Your history will appear here after your first intention
-              </div>
-            )
-          )}
-        </div>
-
-        <div {...SDK_UI_MARKER} style={{ padding: 16, paddingTop: 0 }}>
-          <div
-            {...SDK_UI_MARKER}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 2,
-              width: '100%'
-            }}
-          >
+          ) : pendingClarificationQuestion ? (
             <div
               {...SDK_UI_MARKER}
               style={{
-                flex: 1,
-                minWidth: 0,
                 display: 'flex',
-                alignItems: 'center',
-                minHeight: 34,
-                borderRadius: '8px 0 0 8px',
-                background: theme.inputSurface,
-                padding: '8px 12px'
+                flexDirection: 'column',
+                gap: 4,
+                padding: `0 ${detailHorizontalPadding}px 16px`
               }}
             >
-              <input
-                ref={inputRef}
+              <div
                 {...SDK_UI_MARKER}
-                data-exocor-chat-input="true"
-                data-exocor-text="chat-input"
-                aria-label="Exocor command input"
-                value={input}
-                placeholder="Type your intent..."
-                onChange={(event) => onInputChange(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    handleSubmit();
-                  }
-                }}
+                data-exocor-text="intent-detail"
                 style={{
-                  ['--exocor-chat-input-placeholder' as string]: theme.inputPlaceholder,
-                  width: '100%',
-                  minWidth: 0,
-                  height: 18,
-                  border: 'none',
-                  background: 'transparent',
+                  color: theme.textMuted,
+                  fontFamily: GEIST_FONT,
+                  fontSize: 12,
+                  lineHeight: 'normal',
+                  fontWeight: 500,
+                  letterSpacing: '0.06px'
+                }}
+              >
+                Clarification needed
+              </div>
+              <div
+                {...SDK_UI_MARKER}
+                data-exocor-text="chat-input"
+                style={{
                   color: theme.textPrimary,
-                  padding: 0,
-                  outline: 'none',
-                  caretColor: theme.textPrimary,
-                  fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+                  fontFamily: GEIST_FONT,
                   fontSize: 14,
                   lineHeight: 'normal',
-                  letterSpacing: '-0.14px'
+                  fontWeight: 400,
+                  letterSpacing: '-0.07px'
                 }}
-              />
+              >
+                {pendingClarificationQuestion}
+              </div>
             </div>
+          ) : (
+            <div
+              {...SDK_UI_MARKER}
+              data-exocor-text="ui-body-sm"
+              style={{
+                borderRadius: 16,
+                border: `0.5px solid ${theme.panelBorder}`,
+                background: theme.panelInsetSurface,
+                padding: 16,
+                color: theme.textMuted,
+                textAlign: 'center',
+                fontFamily: GEIST_FONT,
+                fontSize: 12,
+                lineHeight: 'normal',
+                fontWeight: 500,
+                letterSpacing: '0.06px',
+                marginBottom: 16
+              }}
+            >
+              Your history will appear here after your first intention
+            </div>
+          )}
+        </div>
+
+        <div {...SDK_UI_MARKER} style={{ padding: 16 }}>
+          <div
+            {...SDK_UI_MARKER}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              minHeight: 40,
+              borderRadius: 16,
+              border: `0.5px solid ${theme.inputBorder}`,
+              background: theme.inputSurface,
+              padding: '4px 4px 4px 16px',
+              gap: 8
+            }}
+          >
+            <input
+              ref={inputRef}
+              {...SDK_UI_MARKER}
+              data-exocor-chat-input="true"
+              data-exocor-text="chat-input"
+              aria-label="Exocor command input"
+              value={input}
+              placeholder="Type your intent..."
+              onChange={(event) => onInputChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  handleSubmit();
+                }
+              }}
+              style={{
+                ['--exocor-chat-input-placeholder' as string]: theme.inputPlaceholder,
+                width: '100%',
+                minWidth: 0,
+                height: 18,
+                border: 'none',
+                background: 'transparent',
+                color: theme.textPrimary,
+                padding: 0,
+                outline: 'none',
+                caretColor: theme.textPrimary,
+                fontFamily: GEIST_FONT,
+                fontSize: 14,
+                lineHeight: 'normal',
+                fontWeight: 400,
+                letterSpacing: '-0.07px'
+              }}
+            />
 
             <button
               {...SDK_UI_MARKER}
@@ -870,19 +997,20 @@ function ChatPanelContent({
                 setIsSendPressed(false);
               }}
               style={{
-                width: 34,
-                height: 34,
+                width: 32,
+                height: 32,
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                borderRadius: '0 8px 8px 0',
+                borderRadius: 12,
                 border: 'none',
                 background: sendButtonBackground,
                 color: sendButtonIconColor,
                 cursor: canSubmit ? 'pointer' : 'default',
-                flex: '0 0 auto',
+                flex: '0 0 32px',
                 padding: 0,
-                transition: 'background-color 120ms ease'
+                opacity: canSubmit ? 1 : 0.65,
+                transition: 'background-color 120ms ease, opacity 120ms ease'
               }}
             >
               <ArrowUpIcon size={16} color={sendButtonIconColor} />
