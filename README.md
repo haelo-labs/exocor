@@ -43,6 +43,13 @@ Peer dependencies:
 - `react >= 18`
 - `react-dom >= 18`
 
+## Try The Demos
+
+If you want to try Exocor in a real app right away, these demo repos already wire the npm package into runnable examples:
+
+- [Haelo Ops Demo](https://github.com/haelo-labs/haelo-ops-demo)
+- [3D Viewer Demo](https://github.com/haelo-labs/3d-viewer-demo)
+
 ## Smallest Integration
 
 `SpatialProvider` should wrap the host UI subtree Exocor needs to observe and control. It does not need to be the outermost provider in your app.
