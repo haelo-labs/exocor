@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SDK_UI_MARKER } from '../core/sdkUi';
 import { resolveSdkTheme, type SdkThemeMode } from '../core/sdkTheme';
+import type { Modality } from '../types';
 import {
   ArrowUpIcon,
   ChevronDownIcon,
@@ -35,10 +36,9 @@ interface ChatPanelProps {
   open: boolean;
   input: string;
   history: CommandHistoryItem[];
-  canToggleMicrophone: boolean;
-  microphoneEnabled: boolean;
+  canToggle: Record<Modality, boolean>;
   onInputChange: (value: string) => void;
-  onMicrophoneToggle: () => void;
+  onModalityToggle: (modality: Modality) => void;
   onSubmit: (value: string) => void;
   onOpenChange: (open: boolean) => void;
   onClearHistory: () => void;
@@ -57,6 +57,11 @@ const INPUT_METHOD_LABELS: Record<CommandInputMethod, string> = {
   voice: 'Voice',
   typed: 'Typed',
   gaze: 'Gaze'
+};
+const MODALITY_LABELS: Record<Modality, string> = {
+  voice: 'Voice',
+  gaze: 'Gaze',
+  gesture: 'Gesture'
 };
 
 const GEIST_FONT = '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
@@ -175,14 +180,21 @@ function fallbackStatusMessage(status: Exclude<CommandHistoryStatus, 'clarificat
   return 'Request failed';
 }
 
+function getModalityToggleAriaLabel(modality: Modality, enabled: boolean): string {
+  if (modality === 'voice') {
+    return enabled ? 'Turn microphone off' : 'Turn microphone on';
+  }
+
+  return `Turn ${modality} ${enabled ? 'off' : 'on'}`;
+}
+
 function ChatPanelContent({
   open,
   input,
   history,
-  canToggleMicrophone,
-  microphoneEnabled,
+  canToggle,
   onInputChange,
-  onMicrophoneToggle,
+  onModalityToggle,
   onSubmit,
   onOpenChange,
   onClearHistory,
@@ -204,7 +216,7 @@ function ChatPanelContent({
   const [isSendPressed, setIsSendPressed] = useState(false);
   const [isClearHovered, setIsClearHovered] = useState(false);
   const [isClearPressed, setIsClearPressed] = useState(false);
-  const [isVoiceToggleHovered, setIsVoiceToggleHovered] = useState(false);
+  const [hoveredToggle, setHoveredToggle] = useState<Modality | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -343,17 +355,15 @@ function ChatPanelContent({
   const clearButtonIconColor = isClearHovered || isClearPressed ? theme.clearButtonActiveIcon : theme.clearButtonDefaultIcon;
 
   const modalityEntries = useMemo(
-    () => [
-      { key: 'gaze', label: 'Gaze', enabled: modalitiesStatus.gaze, interactive: false },
-      { key: 'gesture', label: 'Gesture', enabled: modalitiesStatus.gesture, interactive: false },
-      {
-        key: 'voice',
-        label: 'Voice',
-        enabled: modalitiesStatus.voice,
-        interactive: canToggleMicrophone
-      }
-    ],
-    [canToggleMicrophone, modalitiesStatus.gaze, modalitiesStatus.gesture, modalitiesStatus.voice]
+    () =>
+      (['gaze', 'gesture', 'voice'] as Modality[])
+        .filter((modality) => canToggle[modality])
+        .map((modality) => ({
+          key: modality,
+          label: MODALITY_LABELS[modality],
+          enabled: modalitiesStatus[modality]
+        })),
+    [canToggle, modalitiesStatus]
   );
 
   const detailHorizontalPadding = theme.mode === 'light' ? 12 : 8;
@@ -412,7 +422,7 @@ function ChatPanelContent({
         >
           <div {...SDK_UI_MARKER} style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {modalityEntries.map((modality) => {
-              const isHovered = modality.key === 'voice' && isVoiceToggleHovered;
+              const isHovered = hoveredToggle === modality.key;
               const isActive = modality.enabled;
               const background = isActive
                 ? theme.mode === 'light'
@@ -468,31 +478,25 @@ function ChatPanelContent({
                 </>
               );
 
-              if (modality.interactive) {
-                return (
-                  <button
-                    key={modality.key}
-                    {...SDK_UI_MARKER}
-                    data-exocor-text="caption-bold"
-                    type="button"
-                    onClick={onMicrophoneToggle}
-                    aria-label={microphoneEnabled ? 'Turn microphone off' : 'Turn microphone on'}
-                    onPointerEnter={() => setIsVoiceToggleHovered(true)}
-                    onPointerLeave={() => setIsVoiceToggleHovered(false)}
-                    style={{
-                      ...pillStyle,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {content}
-                  </button>
-                );
-              }
-
               return (
-                <span key={modality.key} {...SDK_UI_MARKER} data-exocor-text="caption-bold" style={pillStyle}>
+                <button
+                  key={modality.key}
+                  {...SDK_UI_MARKER}
+                  data-exocor-text="caption-bold"
+                  type="button"
+                  onClick={() => onModalityToggle(modality.key)}
+                  aria-label={getModalityToggleAriaLabel(modality.key, isActive)}
+                  onPointerEnter={() => setHoveredToggle(modality.key)}
+                  onPointerLeave={() => {
+                    setHoveredToggle((current) => (current === modality.key ? null : current));
+                  }}
+                  style={{
+                    ...pillStyle,
+                    cursor: 'pointer'
+                  }}
+                >
                   {content}
-                </span>
+                </button>
               );
             })}
           </div>

@@ -226,6 +226,7 @@ type HandLandmarkerInstance = {
 };
 
 export interface FaceNoseCursorOptions {
+  gestureEnabled?: boolean;
   onGaze?: (sample: { x: number; y: number; target: HTMLElement | null; isCalibrated: boolean }) => void;
   onPinchDrag?: (sample: PinchDragSample) => void;
   onPinchState?: (sample: { isPinching: boolean }) => void;
@@ -1069,6 +1070,7 @@ function mirrorHoverStyles(): void {
 }
 
 export function useFaceNoseCursor(options: FaceNoseCursorOptions = {}): FaceNoseCursorController {
+  const gestureEnabled = options.gestureEnabled !== false;
   const videoRef = useRef<HTMLVideoElement>(null);
   const cursorRef = useRef<HTMLDivElement>(null);
   const dragCursorRef = useRef<HTMLDivElement>(null);
@@ -1243,6 +1245,24 @@ export function useFaceNoseCursor(options: FaceNoseCursorOptions = {}): FaceNose
     },
     [clearPinchPressTarget, options]
   );
+
+  useEffect(() => {
+    if (gestureEnabled) {
+      return;
+    }
+
+    isPinchingRef.current = false;
+    lastPinchClickRef.current = 0;
+    lastSwipeGestureAtMsRef.current = -Infinity;
+    suppressSinglePinchUntilReleaseRef.current = false;
+    releaseActivePinchGesture('cancel');
+    resetSwipeHistory();
+    resetZoomGesture();
+    setIsPinching(false);
+    setIsDragging(false);
+    setCursorPosition(dragCursorRef.current, { x: -1000, y: -1000 });
+    options.onPinchState?.({ isPinching: false });
+  }, [gestureEnabled, options, releaseActivePinchGesture, resetSwipeHistory, resetZoomGesture]);
 
   const handlePinchZoom = useCallback(
     (hands: { left: HandGestureSample; right: HandGestureSample }) => {
@@ -1464,6 +1484,18 @@ export function useFaceNoseCursor(options: FaceNoseCursorOptions = {}): FaceNose
   const processHandLandmarks = useCallback(
     (handResult: { landmarks: FaceLandmark[][]; handedness: HandednessCategory[][]; handednesses?: HandednessCategory[][] }) => {
       const now = performance.now();
+      if (!gestureEnabled) {
+        resetSwipeHistory();
+        if (isPinchingRef.current) {
+          isPinchingRef.current = false;
+          setIsPinching(false);
+          options.onPinchState?.({ isPinching: false });
+        }
+        resetZoomGesture();
+        releaseActivePinchGesture('cancel');
+        return;
+      }
+
       if (!neutralRef.current.ready) {
         resetSwipeHistory();
         if (isPinchingRef.current) {
@@ -1625,7 +1657,8 @@ export function useFaceNoseCursor(options: FaceNoseCursorOptions = {}): FaceNose
       resetSwipeHistory,
       resetZoomGesture,
       setHoveredElement,
-      setPinchPressTarget
+      setPinchPressTarget,
+      gestureEnabled
     ]
   );
 
@@ -1688,14 +1721,14 @@ export function useFaceNoseCursor(options: FaceNoseCursorOptions = {}): FaceNose
       }
 
       const handLandmarker = handLandmarkerRef.current;
-      if (handLandmarker) {
+      if (handLandmarker && gestureEnabled) {
         const handResult = handLandmarker.detectForVideo(video, now);
         processHandLandmarks(handResult);
       }
     }
 
     animationFrameRef.current = requestAnimationFrame(trackFrame);
-  }, [clearHoverDispatchTarget, clearHoveredTarget, processHandLandmarks, processLandmarks, updateStatus]);
+  }, [clearHoverDispatchTarget, clearHoveredTarget, gestureEnabled, processHandLandmarks, processLandmarks, updateStatus]);
 
   const startTracking = useCallback(async () => {
     if (isTrackingRef.current || isLoading) {

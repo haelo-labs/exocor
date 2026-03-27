@@ -247,6 +247,9 @@ vi.mock('../core/RemoteIntentResolver', () => ({
 
 import { SpatialProvider } from '../components/SpatialProvider';
 import * as DOMScannerModule from '../core/DOMScanner';
+import { useGaze } from '../hooks/useGaze';
+import { useGesture } from '../hooks/useGesture';
+import { useIntent } from '../hooks/useIntent';
 
 const HISTORY_STORAGE_KEY = 'exocor.command-history.v1';
 const LEGACY_HISTORY_STORAGE_KEY = 'haelo.command-history.v1';
@@ -263,6 +266,20 @@ function HostOpsFieldMock(): JSX.Element {
         <label htmlFor="ticket-assignee">Assignee</label>
         <input id="ticket-assignee" name="assignee" />
       </form>
+    </div>
+  );
+}
+
+function ModalityProbe(): JSX.Element {
+  const gaze = useGaze();
+  const gesture = useGesture();
+  const intent = useIntent();
+
+  return (
+    <div>
+      <div data-testid="probe-gaze-target">{gaze.gazeTarget || 'none'}</div>
+      <div data-testid="probe-gesture">{gesture.gesture}</div>
+      <div data-testid="probe-progress">{intent.progressMessage || 'none'}</div>
     </div>
   );
 }
@@ -805,12 +822,16 @@ describe('SpatialProvider integration', () => {
     return keys;
   }
 
-  async function enableMicrophoneFromPanel(): Promise<void> {
+  async function openPanel(): Promise<void> {
     const sdk = sdkQueries();
     await act(async () => {
       fireEvent.click(sdk.getByLabelText('Open Exocor command panel'));
     });
+  }
 
+  async function enableMicrophoneFromPanel(): Promise<void> {
+    const sdk = sdkQueries();
+    await openPanel();
     await act(async () => {
       fireEvent.click(sdk.getByLabelText('Turn microphone on'));
     });
@@ -818,9 +839,7 @@ describe('SpatialProvider integration', () => {
 
   async function submitTypedCommand(command: string): Promise<void> {
     const sdk = sdkQueries();
-    await act(async () => {
-      fireEvent.click(sdk.getByLabelText('Open Exocor command panel'));
-    });
+    await openPanel();
 
     await act(async () => {
       fireEvent.change(sdk.getByLabelText('Exocor command input'), {
@@ -836,9 +855,21 @@ describe('SpatialProvider integration', () => {
     });
   }
 
+  async function emitPinchState(isPinching: boolean): Promise<void> {
+    await act(async () => {
+      faceCursorOptions?.onPinchState?.({ isPinching });
+    });
+  }
+
+  async function emitPinchClick(target: HTMLElement | null, x = 40, y = 24): Promise<void> {
+    await act(async () => {
+      faceCursorOptions?.onPinchClick?.({ target, x, y });
+    });
+  }
+
   it('keeps microphone off by default and toggles listening from the chat panel', async () => {
     render(
-      <SpatialProvider modalities={['voice']}>
+      <SpatialProvider modalities={['voice', 'gaze']}>
         <HostOpsFieldMock />
       </SpatialProvider>
     );
@@ -853,6 +884,104 @@ describe('SpatialProvider integration', () => {
       fireEvent.click(sdkQueries().getByLabelText('Turn microphone off'));
     });
     expect(speechStopSpy.mock.calls.length).toBe(stopCallsBeforeToggleOff + 1);
+  });
+
+  it('shows gaze as available and lets the user toggle it from the chat panel', async () => {
+    render(
+      <SpatialProvider modalities={['gaze']}>
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await openPanel();
+    expect(sdkQueries().getByLabelText('Turn gaze off')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Turn gaze off'));
+    });
+
+    expect(sdkQueries().queryByLabelText('Turn gaze off')).toBeNull();
+    expect(sdkQueries().getByLabelText('Turn gaze on')).toBeTruthy();
+  });
+
+  it('shows gesture as available and lets the user toggle it from the chat panel', async () => {
+    render(
+      <SpatialProvider modalities={['gesture']}>
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await openPanel();
+    expect(sdkQueries().getByLabelText('Turn gesture off')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Turn gesture off'));
+    });
+
+    expect(sdkQueries().queryByLabelText('Turn gesture off')).toBeNull();
+    expect(sdkQueries().getByLabelText('Turn gesture on')).toBeTruthy();
+  });
+
+  it('hides unavailable modalities from the chat panel', async () => {
+    render(
+      <SpatialProvider modalities={['voice']}>
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await openPanel();
+
+    expect(sdkQueries().getByLabelText('Turn microphone on')).toBeTruthy();
+    expect(sdkQueries().queryByLabelText('Turn gaze on')).toBeNull();
+    expect(sdkQueries().queryByLabelText('Turn gaze off')).toBeNull();
+    expect(sdkQueries().queryByLabelText('Turn gesture on')).toBeNull();
+    expect(sdkQueries().queryByLabelText('Turn gesture off')).toBeNull();
+  });
+
+  it('stops gaze and gesture runtime updates when those modalities are toggled off', async () => {
+    render(
+      <SpatialProvider modalities={['gaze', 'gesture']}>
+        <>
+          <HostOpsFieldMock />
+          <ModalityProbe />
+        </>
+      </SpatialProvider>
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const target = screen.getByLabelText('Assignee');
+
+    await emitGaze(target, 40, 24);
+    expect(screen.getByTestId('probe-gaze-target').textContent).not.toBe('none');
+
+    await emitPinchState(true);
+    expect(screen.getByTestId('probe-gesture').textContent).toBe('pinch');
+
+    await openPanel();
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Turn gaze off'));
+    });
+
+    expect(screen.getByTestId('probe-gaze-target').textContent).toBe('none');
+
+    await emitGaze(target, 120, 80);
+    expect(screen.getByTestId('probe-gaze-target').textContent).toBe('none');
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Turn gesture off'));
+    });
+
+    expect(screen.getByTestId('probe-gesture').textContent).toBe('none');
+
+    await emitPinchState(true);
+    expect(screen.getByTestId('probe-gesture').textContent).toBe('none');
+
+    await emitPinchClick(target);
+    expect(screen.getByTestId('probe-progress').textContent).toBe('none');
   });
 
   it('mounts SDK UI into an in-tree SDK root container', async () => {
@@ -876,7 +1005,7 @@ describe('SpatialProvider integration', () => {
 
   it('keeps SDK light-dom controls out of the scanned capability map', async () => {
     render(
-      <SpatialProvider modalities={['voice']}>
+      <SpatialProvider modalities={['voice', 'gaze']}>
         <HostOpsFieldMock />
       </SpatialProvider>
     );
@@ -907,7 +1036,7 @@ describe('SpatialProvider integration', () => {
 
   it('auto-submits voice command on silence without rendering a listening toast', async () => {
     render(
-      <SpatialProvider modalities={['voice']}>
+      <SpatialProvider modalities={['voice', 'gaze']}>
         <HostOpsFieldMock />
       </SpatialProvider>
     );
@@ -2799,7 +2928,7 @@ describe('SpatialProvider integration', () => {
     });
 
     render(
-      <SpatialProvider modalities={['voice']}>
+      <SpatialProvider modalities={['voice', 'gaze']}>
         <HostOpsFieldMock />
       </SpatialProvider>
     );

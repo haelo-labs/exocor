@@ -11,6 +11,7 @@ import { ActionExecutor, isSubmitLikeCompletionStep } from '../core/ActionExecut
 import * as DOMScannerModule from '../core/DOMScanner';
 import {
   APP_MAP_VERSION,
+  buildScopedStorageKey,
   clearAppMapCache,
   DOMScanner,
   getRouterNavigateFromFiber,
@@ -51,6 +52,7 @@ import type {
   IntentState,
   IntentStep,
   IntentPlan,
+  Modality,
   ResolutionStatus,
   ResolutionPriority,
   SpatialProviderProps,
@@ -64,9 +66,11 @@ const EMPTY_TOOLS: NonNullable<SpatialProviderProps['tools']> = [];
 const SILENCE_TIMEOUT_MS = 1200;
 const APP_MAP_BOOTSTRAP_GRACE_MS = 0;
 const HISTORY_STORAGE_KEY = 'exocor.command-history.v1';
+const ACTIVE_MODALITIES_STORAGE_KEY = 'exocor.active-modalities.v1';
 const LEGACY_HISTORY_STORAGE_KEY = 'haelo.command-history.v1';
 const HISTORY_SESSION_STORAGE_KEY = LEGACY_HISTORY_STORAGE_KEY;
 type VoiceGazeSnapshot = GazeState;
+type ActiveModalities = Record<Modality, boolean>;
 
 interface PendingClarificationState {
   question: string;
@@ -118,6 +122,85 @@ const emptyMap: DOMCapabilityMap = {
 };
 
 const SpatialContext = createContext<SpatialContextValue | null>(null);
+const EMPTY_GAZE_STATE: GazeState = {
+  gazeTarget: null,
+  gazeX: 0,
+  gazeY: 0,
+  isCalibrated: false
+};
+const EMPTY_GESTURE_STATE: GestureState = {
+  gesture: 'none',
+  hand: 'unknown',
+  confidence: 0
+};
+
+function defaultActiveModalities(availableModalities: readonly Modality[]): ActiveModalities {
+  const available = new Set<Modality>(availableModalities);
+  return {
+    voice: false,
+    gaze: available.has('gaze'),
+    gesture: available.has('gesture')
+  };
+}
+
+function sanitizePersistedActiveModalities(raw: unknown): Partial<ActiveModalities> | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  const next: Partial<ActiveModalities> = {};
+  for (const modality of DEFAULT_MODALITIES) {
+    const value = raw[modality];
+    if (typeof value === 'boolean') {
+      next[modality] = value;
+    }
+  }
+
+  return next;
+}
+
+function readPersistedActiveModalities(storageKey: string): Partial<ActiveModalities> | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(storageKey);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return sanitizePersistedActiveModalities(JSON.parse(raw) as unknown);
+  } catch {
+    window.localStorage.removeItem(storageKey);
+    return null;
+  }
+}
+
+function createActiveModalities(
+  availableModalities: readonly Modality[],
+  ...sources: Array<Partial<ActiveModalities> | null | undefined>
+): ActiveModalities {
+  const defaults = defaultActiveModalities(availableModalities);
+  const available = new Set<Modality>(availableModalities);
+  const next = { ...defaults };
+
+  for (const modality of DEFAULT_MODALITIES) {
+    if (!available.has(modality)) {
+      next[modality] = false;
+      continue;
+    }
+
+    for (const source of sources) {
+      if (typeof source?.[modality] === 'boolean') {
+        next[modality] = source[modality] as boolean;
+        break;
+      }
+    }
+  }
+
+  return next;
+}
 
 function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, ' ');
@@ -754,9 +837,14 @@ function resolveGazeTarget(
   gazeState: GazeState
 ): { elementId: string | null; componentName: string | null; text: string } | null {
   if (gazeState.gazeTarget) {
-    const matchedElement = map.elements.find((element) => element.id === gazeState.gazeTarget);
+    const matchedElement =
+      map.elements.find((element) => element.id === gazeState.gazeTarget) ||
+      map.elements.find((element) => element.selector === gazeState.gazeTarget) ||
+      DOMScannerModule.scanDOM().elements.find(
+        (element) => element.id === gazeState.gazeTarget || element.selector === gazeState.gazeTarget
+      );
     return {
-      elementId: gazeState.gazeTarget,
+      elementId: matchedElement?.id || gazeState.gazeTarget,
       componentName: matchedElement?.componentName || null,
       text: matchedElement?.text || matchedElement?.label || ''
     };
@@ -830,10 +918,22 @@ export function SpatialProvider({
 }: SpatialProviderProps): JSX.Element {
   const themeMode = useSdkThemeMode();
   const theme = useMemo(() => resolveSdkTheme(themeMode), [themeMode]);
+  const availableModalities = useMemo(
+    () => DEFAULT_MODALITIES.filter((modality) => modalities.includes(modality)),
+    [modalities]
+  );
+  const initialModalityScopeRef = useRef(resolveCurrentAppCacheScope());
+  const modalityStorageKey = useMemo(
+    () => buildScopedStorageKey(ACTIVE_MODALITIES_STORAGE_KEY, initialModalityScopeRef.current),
+    []
+  );
   const [domMap, setDomMap] = useState<DOMCapabilityMap>(emptyMap);
   const [voice, setVoice] = useState<VoiceState>({ transcript: '', isListening: false, confidence: 0 });
-  const [gaze, setGaze] = useState<GazeState>({ gazeTarget: null, gazeX: 0, gazeY: 0, isCalibrated: false });
-  const [gesture, setGesture] = useState<GestureState>({ gesture: 'none', hand: 'unknown', confidence: 0 });
+  const [gaze, setGaze] = useState<GazeState>(EMPTY_GAZE_STATE);
+  const [gesture, setGesture] = useState<GestureState>(EMPTY_GESTURE_STATE);
+  const [activeModalities, setActiveModalities] = useState<ActiveModalities>(() =>
+    createActiveModalities(availableModalities, readPersistedActiveModalities(modalityStorageKey))
+  );
   const [lastIntent, setLastIntent] = useState<IntentAction | null>(null);
   const [isResolving, setIsResolving] = useState(false);
   const [resolutionStatus, setResolutionStatus] = useState<ResolutionStatus>('idle');
@@ -841,7 +941,6 @@ export function SpatialProvider({
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [isPanelOpen, setIsPanelOpen] = useState(false);
-  const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(false);
   const [isAudioCapturing, setIsAudioCapturing] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [commandHistory, setCommandHistory] = useState<CommandHistoryItem[]>([]);
@@ -871,6 +970,9 @@ export function SpatialProvider({
   const historyTraceCounterRef = useRef(0);
   const lastVoiceSubmissionRef = useRef<string>('');
   const voiceGazeSnapshotRef = useRef<VoiceGazeSnapshot | null>(null);
+  const previousAvailableModalitiesRef = useRef<Modality[]>(availableModalities);
+  const activeModalitiesRef = useRef(activeModalities);
+  const isMicrophoneEnabled = activeModalities.voice;
   const microphoneEnabledRef = useRef(isMicrophoneEnabled);
   const resolvingRef = useRef(false);
   const domMapRef = useRef<DOMCapabilityMap>(domMap);
@@ -930,6 +1032,10 @@ export function SpatialProvider({
   }, [gesture]);
 
   useEffect(() => {
+    activeModalitiesRef.current = activeModalities;
+  }, [activeModalities]);
+
+  useEffect(() => {
     appMapRef.current = appMap;
   }, [appMap]);
 
@@ -940,6 +1046,35 @@ export function SpatialProvider({
   useEffect(() => {
     microphoneEnabledRef.current = isMicrophoneEnabled;
   }, [isMicrophoneEnabled]);
+
+  useEffect(() => {
+    const persisted = readPersistedActiveModalities(modalityStorageKey);
+    const carriedForward = previousAvailableModalitiesRef.current.reduce<Partial<ActiveModalities>>((result, modality) => {
+      if (availableModalities.includes(modality)) {
+        result[modality] = activeModalitiesRef.current[modality];
+      }
+      return result;
+    }, {});
+
+    const next = createActiveModalities(availableModalities, carriedForward, persisted);
+    previousAvailableModalitiesRef.current = availableModalities;
+
+    setActiveModalities((previous) =>
+      previous.voice === next.voice &&
+      previous.gaze === next.gaze &&
+      previous.gesture === next.gesture
+        ? previous
+        : next
+    );
+  }, [availableModalities, modalityStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(modalityStorageKey, JSON.stringify(activeModalities));
+  }, [activeModalities, modalityStorageKey]);
 
   const resolver = useMemo(
     () =>
@@ -1244,12 +1379,61 @@ export function SpatialProvider({
     return true;
   }, [appendCommandHistoryTrace, updateCommandHistoryEntry]);
 
+  const canToggleModalities = useMemo(
+    () => ({
+      voice: availableModalities.includes('voice'),
+      gaze: availableModalities.includes('gaze'),
+      gesture: availableModalities.includes('gesture')
+    }),
+    [availableModalities]
+  );
+
+  const handleModalityToggle = useCallback(
+    (modality: Modality) => {
+      if (!canToggleModalities[modality]) {
+        return;
+      }
+
+      setActiveModalities((previous) => ({
+        ...previous,
+        [modality]: !previous[modality]
+      }));
+    },
+    [canToggleModalities]
+  );
+
   const onFaceGaze = useCallback((sample: { x: number; y: number; target: HTMLElement | null; isCalibrated: boolean }) => {
+    if (!activeModalitiesRef.current.gaze) {
+      setGaze((previous) =>
+        previous.gazeTarget || previous.gazeX !== 0 || previous.gazeY !== 0 || previous.isCalibrated
+          ? EMPTY_GAZE_STATE
+          : previous
+      );
+      return;
+    }
+
     const targetSelector = sample.target ? resolveSelectorForElement(sample.target) : null;
-    const targetMatch = targetSelector
+    const directMatch =
+      sample.target instanceof HTMLElement ? findElementByNode(sample.target, domMapRef.current.elements) : null;
+    const selectorMatch = targetSelector
       ? domMapRef.current.elements.find((element) => element.selector === targetSelector)
       : null;
-    const targetId = targetMatch?.id || null;
+    let targetId = directMatch?.id || selectorMatch?.id || null;
+
+    if (!targetId && sample.target instanceof HTMLElement) {
+      const liveMap = DOMScannerModule.scanDOM();
+      const liveMatch =
+        findElementByNode(sample.target, liveMap.elements) ||
+        (targetSelector ? liveMap.elements.find((element) => element.selector === targetSelector) || null : null);
+
+      if (liveMatch) {
+        targetId = liveMatch.id;
+        setDomMap(liveMap);
+      } else if (targetSelector) {
+        targetId = targetSelector;
+      }
+    }
+
     setGaze({
       gazeTarget: targetId,
       gazeX: sample.x,
@@ -1259,6 +1443,15 @@ export function SpatialProvider({
   }, []);
 
   const onPinchState = useCallback((sample: { isPinching: boolean }) => {
+    if (!activeModalitiesRef.current.gesture) {
+      setGesture((previous) =>
+        previous.gesture !== 'none' || previous.hand !== 'unknown' || previous.confidence !== 0
+          ? EMPTY_GESTURE_STATE
+          : previous
+      );
+      return;
+    }
+
     setGesture({
       gesture: sample.isPinching ? 'pinch' : 'none',
       hand: 'unknown',
@@ -1268,6 +1461,10 @@ export function SpatialProvider({
 
   const onPinchClick = useCallback(
     (sample: { target: Element | null; x: number; y: number }) => {
+      if (!activeModalitiesRef.current.gesture) {
+        return;
+      }
+
       const targetSelector =
         sample.target && !isSdkUiElement(sample.target) ? resolveSelectorForElement(sample.target) : null;
 
@@ -1294,11 +1491,12 @@ export function SpatialProvider({
 
   const faceCursorOptions = useMemo(
     () => ({
+      gestureEnabled: activeModalities.gesture,
       onGaze: onFaceGaze,
       onPinchState,
       onPinchClick
     }),
-    [onFaceGaze, onPinchState, onPinchClick]
+    [activeModalities.gesture, onFaceGaze, onPinchState, onPinchClick]
   );
 
   const faceCursor = useFaceNoseCursor(faceCursorOptions);
@@ -1324,6 +1522,31 @@ export function SpatialProvider({
   const resetVoiceGazeSnapshot = useCallback(() => {
     voiceGazeSnapshotRef.current = null;
   }, []);
+
+  useEffect(() => {
+    if (activeModalities.gaze) {
+      return;
+    }
+
+    resetVoiceGazeSnapshot();
+    setGaze((previous) =>
+      previous.gazeTarget || previous.gazeX !== 0 || previous.gazeY !== 0 || previous.isCalibrated
+        ? EMPTY_GAZE_STATE
+        : previous
+    );
+  }, [activeModalities.gaze, resetVoiceGazeSnapshot]);
+
+  useEffect(() => {
+    if (activeModalities.gesture) {
+      return;
+    }
+
+    setGesture((previous) =>
+      previous.gesture !== 'none' || previous.hand !== 'unknown' || previous.confidence !== 0
+        ? EMPTY_GESTURE_STATE
+        : previous
+    );
+  }, [activeModalities.gesture]);
 
   const clearVoiceTranscript = useCallback(() => {
     setVoice((previous) => {
@@ -2085,7 +2308,7 @@ export function SpatialProvider({
   }, []);
 
   useEffect(() => {
-    if (!modalities.includes('voice')) {
+    if (!availableModalities.includes('voice')) {
       speechControllerRef.current?.destroy();
       speechControllerRef.current = null;
       resetVoiceUtteranceState();
@@ -2095,7 +2318,6 @@ export function SpatialProvider({
         window.clearTimeout(audioCaptureTimerRef.current);
         audioCaptureTimerRef.current = null;
       }
-      setIsMicrophoneEnabled(false);
       setIsAudioCapturing(false);
       setVoice((previous) => ({
         ...previous,
@@ -2198,13 +2420,13 @@ export function SpatialProvider({
     captureVoiceGazeSnapshot,
     clearSilenceTimer,
     clearVoiceTranscript,
-    modalities,
+    availableModalities,
     resetVoiceUtteranceState,
     submitVoiceCommand
   ]);
 
   useEffect(() => {
-    if (!modalities.includes('voice')) {
+    if (!availableModalities.includes('voice')) {
       return;
     }
 
@@ -2233,18 +2455,12 @@ export function SpatialProvider({
       isListening: false,
       confidence: 0
     }));
-  }, [clearVoiceTranscript, isMicrophoneEnabled, modalities, resetVoiceUtteranceState]);
+  }, [availableModalities, clearVoiceTranscript, isMicrophoneEnabled, resetVoiceUtteranceState]);
 
   useEffect(() => {
-    const needsVision = modalities.includes('gaze') || modalities.includes('gesture');
+    const needsVision = activeModalities.gaze || activeModalities.gesture;
     if (!needsVision) {
       faceCursor.stopTracking();
-      setGaze((previous) => (previous.isCalibrated ? { ...previous, isCalibrated: false } : previous));
-      setGesture((previous) =>
-        previous.gesture !== 'none' || previous.hand !== 'unknown' || previous.confidence !== 0
-          ? { gesture: 'none', hand: 'unknown', confidence: 0 }
-          : previous
-      );
       return;
     }
 
@@ -2253,7 +2469,7 @@ export function SpatialProvider({
     return () => {
       faceCursor.stopTracking();
     };
-  }, [modalities]);
+  }, [activeModalities.gaze, activeModalities.gesture]);
 
   useEffect(() => {
     return () => {
@@ -2275,30 +2491,23 @@ export function SpatialProvider({
       return 'executing';
     }
 
-    if (modalities.includes('voice') && isMicrophoneEnabled && voice.isListening && isAudioCapturing) {
+    if (availableModalities.includes('voice') && isMicrophoneEnabled && voice.isListening && isAudioCapturing) {
       return 'listening';
     }
 
     return 'idle';
-  }, [isAudioCapturing, isMicrophoneEnabled, isResolving, modalities, voice.isListening]);
+  }, [availableModalities, isAudioCapturing, isMicrophoneEnabled, isResolving, voice.isListening]);
 
   const showVoiceTranscriptBubble =
-    modalities.includes('voice') &&
-    (modalities.includes('gaze') || modalities.includes('gesture')) &&
+    activeModalities.voice &&
+    (activeModalities.gaze || activeModalities.gesture) &&
     isMicrophoneEnabled &&
     voice.isListening &&
     isAudioCapturing &&
     faceCursor.showCursor &&
     Boolean(voice.transcript.trim());
 
-  const modalStatus = useMemo(
-    () => ({
-      voice: modalities.includes('voice') && isMicrophoneEnabled,
-      gaze: modalities.includes('gaze') && faceCursor.isTracking,
-      gesture: modalities.includes('gesture') && faceCursor.isTracking
-    }),
-    [faceCursor.isTracking, isMicrophoneEnabled, modalities]
-  );
+  const modalStatus = activeModalities;
 
   const hoveredElementRect = useMemo(() => {
     if (!gaze.gazeTarget) {
@@ -2353,7 +2562,7 @@ export function SpatialProvider({
           dragCursorRef={faceCursor.dragCursorRef}
           visible={
             !isDiscovering &&
-            (modalities.includes('gaze') || modalities.includes('gesture')) &&
+            (activeModalities.gaze || activeModalities.gesture) &&
             faceCursor.showCursor
           }
           isPinching={faceCursor.isPinching}
@@ -2387,11 +2596,10 @@ export function SpatialProvider({
           open={isPanelOpen}
           input={chatInput}
           history={commandHistory}
-          canToggleMicrophone={modalities.includes('voice')}
-          microphoneEnabled={isMicrophoneEnabled}
+          canToggle={canToggleModalities}
           isResolving={isResolving}
           onInputChange={setChatInput}
-          onMicrophoneToggle={() => setIsMicrophoneEnabled((previous) => !previous)}
+          onModalityToggle={handleModalityToggle}
           onOpenChange={setIsPanelOpen}
           onStop={stopActiveCommand}
           onSubmit={(value) => {
