@@ -21,10 +21,11 @@ Exocor is intentionally hybrid:
 
 That means tools are additive, not a replacement for discovery. Exocor can learn the app, prefer a trusted explicit action when one clearly fits, and still fall back to app-map-aware or DOM execution when that is the better path.
 
-## What Ships In 0.2
+## What Ships In 0.2.x
 
 - `SpatialProvider` as the main runtime wrapper
 - typed, voice, gaze, and pinch-based interaction in one command pipeline
+- runtime modality toggles in the chat panel, with per-app preference persistence
 - provider-level explicit tools with route affinity, safety metadata, and argument schemas
 - streamed planning with clarification, stale-map refresh, and dynamic follow-up steps
 - authoritative execution for a uniquely strong preferred tool when Exocor can use it safely
@@ -59,6 +60,8 @@ export default function App() {
 ```
 
 Use this when you want the SDK around the app UI without registering explicit tools yet.
+
+`SpatialProvider.modalities` controls which modalities are available, not which ones must stay on. Users can toggle any available modality from the SDK chat panel at runtime. When both gaze and gesture are available, gesture depends on gaze: turning gaze off also turns gesture off, while turning gesture back on will reactivate gaze.
 
 ## Tool-Enabled Integration
 

@@ -3,23 +3,25 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatPanel } from '../components/ChatPanel';
 
+const defaultCanToggle = { voice: true, gaze: false, gesture: false };
+const defaultModalitiesStatus = { voice: false, gaze: false, gesture: false };
+
 describe('ChatPanel', () => {
   it('submits the command on Enter', () => {
     const onSubmit = vi.fn();
 
     render(
-      <ChatPanel
+        <ChatPanel
         open
         input="assign to Sarah"
         history={[]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={onSubmit}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -35,14 +37,13 @@ describe('ChatPanel', () => {
         open
         input=""
         history={[]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={onSubmit}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -61,16 +62,15 @@ describe('ChatPanel', () => {
         open
         input="assign to Sarah"
         history={[]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         isResolving
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onStop={onStop}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -86,14 +86,13 @@ describe('ChatPanel', () => {
         open
         input=""
         history={[]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={onOpenChange}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -118,14 +117,13 @@ describe('ChatPanel', () => {
             traces: []
           }
         ]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={() => {}}
         onClearHistory={onClearHistory}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -149,14 +147,13 @@ describe('ChatPanel', () => {
             message: 'Which ticket should I open?'
           }
         ]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -178,14 +175,13 @@ describe('ChatPanel', () => {
             traces: []
           }
         ]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -207,14 +203,13 @@ describe('ChatPanel', () => {
             traces: []
           }
         ]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -236,14 +231,13 @@ describe('ChatPanel', () => {
             createdAt: Date.now()
           } as any
         ]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 
@@ -273,14 +267,13 @@ describe('ChatPanel', () => {
         open
         input=""
         history={[brokenEntry as any]}
-        canToggleMicrophone
-        microphoneEnabled={false}
+        canToggle={defaultCanToggle}
         onInputChange={() => {}}
-        onMicrophoneToggle={() => {}}
+        onModalityToggle={() => {}}
         onSubmit={() => {}}
         onOpenChange={() => {}}
         onClearHistory={() => {}}
-        modalitiesStatus={{ voice: true, gaze: false, gesture: false }}
+        modalitiesStatus={defaultModalitiesStatus}
       />
     );
 

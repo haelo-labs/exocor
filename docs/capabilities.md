@@ -9,11 +9,13 @@
 - Uses MediaPipe face tracking and nose position to drive a cursor.
 - Maps gaze to the nearest interactive host element.
 - Surfaces live gaze state through `useGaze()`.
+- Can be turned on or off at runtime from the SDK chat panel when the host app exposes gaze.
 
 ## Gesture
 - Uses MediaPipe hand tracking.
 - Supports pinch-based click and drag interactions.
 - Surfaces live gesture state through `useGesture()`.
+- Can be turned on or off at runtime from the SDK chat panel when the host app exposes gesture. When both gaze and gesture are available, gesture is gated by gaze.
 
 ## Planning And Execution
 - Builds an app map of routes, buttons, forms, tabs, filters, and reusable modal surfaces.

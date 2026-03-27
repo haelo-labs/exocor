@@ -25,6 +25,8 @@ import { SpatialProvider } from 'exocor';
 
 Use this when you just want the SDK around the app UI.
 
+`SpatialProvider.modalities` controls which modalities are available. Users can toggle available voice, gaze, and gesture from the SDK chat panel at runtime, and those choices persist per app scope. When both gaze and gesture are exposed, gesture depends on gaze, so turning gaze off also turns gesture off.
+
 ## Recommended Tool-Enabled Integration
 
 If your tool handlers depend on app state, router helpers, or domain actions, keep those providers above `SpatialProvider` and render your routed UI inside it.
