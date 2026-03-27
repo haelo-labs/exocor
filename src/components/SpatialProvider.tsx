@@ -134,13 +134,32 @@ const EMPTY_GESTURE_STATE: GestureState = {
   confidence: 0
 };
 
+function normalizeActiveModalities(
+  availableModalities: readonly Modality[],
+  activeModalities: ActiveModalities
+): ActiveModalities {
+  const available = new Set<Modality>(availableModalities);
+  const next: ActiveModalities = {
+    voice: available.has('voice') ? activeModalities.voice : false,
+    gaze: available.has('gaze') ? activeModalities.gaze : false,
+    gesture: available.has('gesture') ? activeModalities.gesture : false
+  };
+
+  // When gaze is exposed, gesture is treated as a child toggle of gaze.
+  if (available.has('gaze') && next.gesture) {
+    next.gaze = true;
+  }
+
+  return next;
+}
+
 function defaultActiveModalities(availableModalities: readonly Modality[]): ActiveModalities {
   const available = new Set<Modality>(availableModalities);
-  return {
+  return normalizeActiveModalities(availableModalities, {
     voice: false,
     gaze: available.has('gaze'),
     gesture: available.has('gesture')
-  };
+  });
 }
 
 function sanitizePersistedActiveModalities(raw: unknown): Partial<ActiveModalities> | null {
@@ -199,7 +218,7 @@ function createActiveModalities(
     }
   }
 
-  return next;
+  return normalizeActiveModalities(availableModalities, next);
 }
 
 function normalizeCommand(command: string): string {
@@ -1394,12 +1413,20 @@ export function SpatialProvider({
         return;
       }
 
-      setActiveModalities((previous) => ({
-        ...previous,
-        [modality]: !previous[modality]
-      }));
+      setActiveModalities((previous) => {
+        const next = {
+          ...previous,
+          [modality]: !previous[modality]
+        };
+
+        if (modality === 'gaze' && previous.gaze) {
+          next.gesture = false;
+        }
+
+        return normalizeActiveModalities(availableModalities, next);
+      });
     },
-    [canToggleModalities]
+    [availableModalities, canToggleModalities]
   );
 
   const onFaceGaze = useCallback((sample: { x: number; y: number; target: HTMLElement | null; isCalibrated: boolean }) => {

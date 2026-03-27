@@ -967,21 +967,42 @@ describe('SpatialProvider integration', () => {
     });
 
     expect(screen.getByTestId('probe-gaze-target').textContent).toBe('none');
+    expect(screen.getByTestId('probe-gesture').textContent).toBe('none');
+    expect(sdkQueries().getByLabelText('Turn gaze on')).toBeTruthy();
+    expect(sdkQueries().getByLabelText('Turn gesture on')).toBeTruthy();
 
     await emitGaze(target, 120, 80);
     expect(screen.getByTestId('probe-gaze-target').textContent).toBe('none');
-
-    await act(async () => {
-      fireEvent.click(sdkQueries().getByLabelText('Turn gesture off'));
-    });
-
-    expect(screen.getByTestId('probe-gesture').textContent).toBe('none');
 
     await emitPinchState(true);
     expect(screen.getByTestId('probe-gesture').textContent).toBe('none');
 
     await emitPinchClick(target);
     expect(screen.getByTestId('probe-progress').textContent).toBe('none');
+  });
+
+  it('reactivates gaze when gesture is turned back on while both modalities are available', async () => {
+    render(
+      <SpatialProvider modalities={['gaze', 'gesture']}>
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await openPanel();
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Turn gaze off'));
+    });
+
+    expect(sdkQueries().getByLabelText('Turn gaze on')).toBeTruthy();
+    expect(sdkQueries().getByLabelText('Turn gesture on')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Turn gesture on'));
+    });
+
+    expect(sdkQueries().getByLabelText('Turn gaze off')).toBeTruthy();
+    expect(sdkQueries().getByLabelText('Turn gesture off')).toBeTruthy();
   });
 
   it('mounts SDK UI into an in-tree SDK root container', async () => {
