@@ -3,7 +3,6 @@ import { buildCompressedCapabilityMap } from './CapabilityMap';
 import { summarizeAppMapForResolver } from './DOMScanner';
 import type { ExocorPreferredToolIntentResult } from './resolverProtocol';
 import type {
-  AppMap,
   AppMapSummary,
   CompressedCapabilityMap,
   DOMElementDescriptor,
@@ -549,6 +548,22 @@ export class IntentResolver {
     }
   }
 
+  private log(...args: unknown[]): void {
+    if (!this.debug) {
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(...args);
+  }
+
+  private warn(...args: unknown[]): void {
+    if (!this.debug) {
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.warn(...args);
+  }
+
   private hasTypedAnchor(appContext?: Record<string, unknown>): boolean {
     if (!appContext) {
       return false;
@@ -565,7 +580,7 @@ export class IntentResolver {
     return Boolean(selectedText || focusedElementId);
   }
 
-  private hasAppMapContext(domContext: { appMap?: AppMap | AppMapSummary | null }): boolean {
+  private hasAppMapContext(domContext: { appMap?: AppMapSummary | null }): boolean {
     const appMap = domContext.appMap;
     if (!appMap || !Array.isArray(appMap.routes)) {
       return false;
@@ -704,9 +719,17 @@ export class IntentResolver {
       };
     }
 
-    // eslint-disable-next-line no-console
-    console.log(`[Exocor] Resolution priority: ${decision.priority} (reason: ${decision.reason})`);
+    this.log(`[Exocor] Resolution priority: ${decision.priority} (reason: ${decision.reason})`);
     return decision;
+  }
+
+  private summarizeAppMapForPrompt(
+    appMap: IntentResolutionInput['appMap'],
+    currentRoute: string,
+    tokenBudget = 800,
+    anchorRoute?: string | null
+  ): AppMapSummary | null {
+    return summarizeAppMapForResolver(appMap || null, currentRoute, tokenBudget, anchorRoute);
   }
 
   private buildRuntimeStateSnapshot(
@@ -740,7 +763,7 @@ export class IntentResolver {
 
   private buildResolverContext(
     compressed: CompressedCapabilityMap,
-    appMap: AppMap | null | undefined,
+    appMap: AppMapSummary | null | undefined,
     runtimeState: RuntimeStateSnapshot,
     toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
   ): ResolverPromptContext {
@@ -756,7 +779,7 @@ export class IntentResolver {
 
   private buildAppMapFirstContext(
     compressed: CompressedCapabilityMap,
-    appMap: AppMap | null | undefined,
+    appMap: AppMapSummary | null | undefined,
     runtimeState: RuntimeStateSnapshot,
     toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
   ): ResolverPromptContext {
@@ -849,10 +872,7 @@ If needsClarification=false: question must be empty string.`;
 
       return decision.question || 'Which item should I use?';
     } catch (error) {
-      if (this.debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[Exocor] Typed clarification gate failed.', error);
-      }
+      this.warn('[Exocor] Typed clarification gate failed.', error);
       return null;
     }
   }
@@ -863,13 +883,12 @@ If needsClarification=false: question must be empty string.`;
       return null;
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    const steps = await this.resolveWithClaude(command, compressed, runtimeState, input.appMap, input.toolCapabilityMap, null);
+    const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
+    this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
+    this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
+    const steps = await this.resolveWithClaude(command, compressed, runtimeState, appMapSummary, input.toolCapabilityMap, null);
 
     if (!steps.length) {
       return null;
@@ -893,13 +912,12 @@ If needsClarification=false: question must be empty string.`;
       return [];
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    return this.resolveWithClaude(command, compressed, runtimeState, input.appMap, input.toolCapabilityMap, {
+    const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
+    this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
+    this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
+    return this.resolveWithClaude(command, compressed, runtimeState, appMapSummary, input.toolCapabilityMap, {
       failedStep,
       failureReason
     });
@@ -915,13 +933,12 @@ If needsClarification=false: question must be empty string.`;
       return [];
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
+    const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
+    this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
+    this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
+    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
     const newElementsContext = toNewElementContext(newElements);
 
     const userPrompt = [
@@ -948,14 +965,13 @@ If needsClarification=false: question must be empty string.`;
       return [];
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
+    const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
+    this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
+    this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
 
-    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
+    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
     const completedStepLabels = completedSteps.map((step) => step.reason || `${step.action} ${step.target || ''}`);
 
     const userPrompt = [
@@ -987,21 +1003,26 @@ If needsClarification=false: question must be empty string.`;
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    const appMapSummary = summarizeAppMapForResolver(input.appMap, compressed.currentRoute, 800);
-    const fullAppMap = input.appMap || null;
+    const initialAppMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute, 800);
     const liveDomContextForClaude = this.buildResolverContext(
       compressed,
-      fullAppMap,
+      initialAppMapSummary,
       runtimeState,
       input.toolCapabilityMap
     );
-    const priorityDecision = this.classifyResolutionPriority(command, appMapSummary);
+    const priorityDecision = this.classifyResolutionPriority(command, initialAppMapSummary);
     callbacks.onResolutionPriority?.(priorityDecision.priority);
+    const appMapSummary = this.summarizeAppMapForPrompt(
+      input.appMap,
+      compressed.currentRoute,
+      800,
+      priorityDecision.routeAnchor
+    );
 
     const contextForClaude =
       priorityDecision.priority === 'dom_only'
         ? liveDomContextForClaude
-        : this.buildAppMapFirstContext(compressed, fullAppMap, runtimeState, input.toolCapabilityMap);
+        : this.buildAppMapFirstContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
     const contextInputMethod = input.inputMethod === 'text' ? 'typed' : input.inputMethod;
     const alreadyClarified = command.includes('|||clarified|||');
     if (
@@ -1132,10 +1153,7 @@ Complete the full task end to end. Never stop halfway.`;
 
       const steps = parser.reconcileFromText(fullText);
       if (steps.length) {
-        if (this.debug) {
-          // eslint-disable-next-line no-console
-          console.log('[Exocor] DOM steps from streamed context resolve:', JSON.stringify(steps, null, 2));
-        }
+        this.log('[Exocor] DOM steps from streamed context resolve:', JSON.stringify(steps, null, 2));
         return {
           type: 'dom_steps',
           plan: { source: 'claude', rawCommand: command, confidence: 0.85, steps },
@@ -1147,16 +1165,10 @@ Complete the full task end to end. Never stop halfway.`;
         return { type: 'text_response', text: fullText.trim() };
       }
 
-      if (this.debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[Exocor] resolveWithContextStreamInternal returned no valid steps. Failing gracefully.');
-      }
+      this.warn('[Exocor] resolveWithContextStreamInternal returned no valid steps. Failing gracefully.');
       return null;
     } catch (error) {
-      if (this.debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[Exocor] resolveWithContextStreamInternal failed.', error);
-      }
+      this.warn('[Exocor] resolveWithContextStreamInternal failed.', error);
       return null;
     }
   }
@@ -1165,15 +1177,12 @@ Complete the full task end to end. Never stop halfway.`;
     command: string,
     compressedMap: CompressedCapabilityMap,
     runtimeState: RuntimeStateSnapshot,
-    appMap: AppMap | null | undefined,
+    appMap: AppMapSummary | null | undefined,
     toolCapabilityMap: IntentResolutionInput['toolCapabilityMap'],
     failureContext: { failedStep: IntentStep; failureReason: string } | null
   ): Promise<IntentStep[]> {
     if (!this.client) {
-      if (this.debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[Exocor] Anthropic API key missing; resolver unavailable.');
-      }
+      this.warn('[Exocor] Anthropic API key missing; resolver unavailable.');
       return [];
     }
 
@@ -1214,7 +1223,8 @@ Complete the full task end to end. Never stop halfway.`;
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
+    const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
+    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
     const preferredTool = input.toolCapabilityMap?.tools.find((tool) => tool.id === preferredToolId) || null;
 
     const retrySystemPrompt = `${CLAUDE_SYSTEM_PROMPT}
@@ -1255,7 +1265,8 @@ PREFERRED TOOL CORRECTION:
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
     const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
-    const contextForClaude = this.buildResolverContext(compressed, input.appMap, runtimeState, input.toolCapabilityMap);
+    const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
+    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
     const preferredTool = input.toolCapabilityMap?.tools.find((tool) => tool.id === preferredToolId) || null;
 
     if (!preferredTool) {
@@ -1328,10 +1339,7 @@ Rules:
         }
       );
     } catch (error) {
-      if (this.debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[Exocor] Preferred tool resolution failed.', error);
-      }
+      this.warn('[Exocor] Preferred tool resolution failed.', error);
 
       return {
         status: 'fallback',
@@ -1359,14 +1367,10 @@ Rules:
         .map((block) => block.text)
         .join('\n');
       const steps = parseSteps(text);
-      // eslint-disable-next-line no-console
-      console.log('[Exocor] Anthropic plan:', JSON.stringify(steps, null, 2));
+      this.log('[Exocor] Anthropic plan:', JSON.stringify(steps, null, 2));
       return steps;
     } catch (error) {
-      if (this.debug) {
-        // eslint-disable-next-line no-console
-        console.warn('[Exocor] Anthropic resolver call failed.', error);
-      }
+      this.warn('[Exocor] Anthropic resolver call failed.', error);
       return [];
     }
   }

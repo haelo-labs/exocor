@@ -2,6 +2,12 @@ import type { ReactNode } from 'react';
 
 /** Supported input modalities. */
 export type Modality = 'voice' | 'gaze' | 'gesture';
+/** Developer-facing context shaping mode for resolver payloads. */
+export type ExocorContextMode = 'full' | 'balanced' | 'lean';
+/** Section inclusion mode for resolver payload shaping. */
+export type ExocorSectionMode = 'auto' | 'always' | 'never';
+/** Redactable string fields across live DOM and app-map derived payloads. */
+export type ExocorRedactionField = 'label' | 'text' | 'value' | 'placeholder' | 'ariaLabel' | 'name';
 
 /** Supported primitive actions that can be executed against the host app. */
 export type IntentActionType = 'click' | 'navigate' | 'fill' | 'submit' | 'scroll' | 'tool';
@@ -47,6 +53,44 @@ export interface AppTool {
   name: string;
   description: string;
   execute: (...args: unknown[]) => unknown | Promise<unknown>;
+}
+
+/** Resolver payload budget and section-shaping controls. */
+export interface ExocorContextPolicy {
+  mode?: ExocorContextMode;
+  maxContextTokens?: number;
+  sections?: {
+    appMap?: ExocorSectionMode;
+    liveDom?: ExocorSectionMode;
+    dialogs?: ExocorSectionMode;
+    forms?: ExocorSectionMode;
+    tablesAndLists?: ExocorSectionMode;
+    gaze?: ExocorSectionMode;
+    selectedText?: ExocorSectionMode;
+    tools?: ExocorSectionMode;
+  };
+}
+
+/** One selector-based redaction rule applied before resolver payloads are sent. */
+export interface ExocorRedactionRule {
+  selector: string;
+  fields?: ExocorRedactionField[];
+  replace?: string;
+}
+
+/** Developer-facing trust controls over scanning, sending, and feature usage. */
+export interface ExocorTrustPolicy {
+  features?: {
+    remoteResolver?: boolean;
+    appMapDiscovery?: boolean;
+    liveDomScanning?: boolean;
+    reactHints?: boolean;
+    routerHints?: boolean;
+    tools?: boolean;
+  };
+  neverScan?: string[];
+  neverSend?: string[];
+  redact?: ExocorRedactionRule[];
 }
 
 /** Represents one interactive capability discovered in the host DOM. */
@@ -352,6 +396,8 @@ export interface SpatialProviderProps {
   modalities?: Modality[];
   debug?: boolean;
   tools?: ExocorToolDefinition[];
+  contextPolicy?: ExocorContextPolicy;
+  trustPolicy?: ExocorTrustPolicy;
   /** Called when a fresh app map is discovered or loaded from cache. */
   onAppMapped?: (appMap: AppMap) => void;
 }
@@ -361,7 +407,7 @@ export interface IntentResolutionInput {
   command: string;
   inputMethod: CommandInputMethod;
   map: DOMCapabilityMap;
-  appMap?: AppMap | null;
+  appMap?: AppMap | AppMapSummary | null;
   toolCapabilityMap?: ToolCapabilityMap | null;
   gazeTarget: string | null;
   gesture: GestureState['gesture'];

@@ -1311,6 +1311,77 @@ describe('SpatialProvider integration', () => {
     await advance(3000);
   });
 
+  it('does not call the remote resolver when remoteResolver is disabled', async () => {
+    render(
+      <SpatialProvider
+        modalities={[]}
+        trustPolicy={{
+          features: {
+            remoteResolver: false
+          }
+        }}
+      >
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await act(async () => {
+      fireEvent.click(sdkQueries().getByLabelText('Open Exocor command panel'));
+    });
+
+    await act(async () => {
+      fireEvent.change(sdkQueries().getByLabelText('Exocor command input'), {
+        target: { value: 'create a ticket for remote disabled' }
+      });
+      fireEvent.click(sdkQueries().getByLabelText('Send command'));
+    });
+
+    await advance(700);
+
+    expect(resolveStreamSpy).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('Ticket Title') as HTMLInputElement).value).toBe('');
+  });
+
+  it('keeps registered tools out of planning when tools are disabled', async () => {
+    window.history.pushState({}, '', '/dashboard');
+    const refreshHandler = vi.fn().mockResolvedValue(undefined);
+    resolveStreamSpy.mockResolvedValueOnce({
+      type: 'text_response',
+      text: 'Planner path'
+    });
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        tools={[
+          {
+            id: 'refreshDashboard',
+            description: 'Refresh dashboard',
+            safety: 'read',
+            handler: refreshHandler
+          }
+        ]}
+        trustPolicy={{
+          features: {
+            tools: false
+          }
+        }}
+      >
+        <HostToolRouteMock />
+      </SpatialProvider>
+    );
+
+    await submitTypedCommand('please refresh the dashboard');
+    await advance(700);
+
+    expect(refreshHandler).not.toHaveBeenCalled();
+    expect(resolvePreferredToolIntentSpy).not.toHaveBeenCalled();
+    expect(resolveStreamSpy).toHaveBeenCalledTimes(1);
+    expect(resolveStreamSpy.mock.calls[0]?.[0]).toMatchObject({
+      toolCapabilityMap: null
+    });
+  });
+
   it('starts discovery on mount and shows overlay when cache is missing', async () => {
     const discoverSpy = vi
       .spyOn(DOMScannerModule, 'discoverAppMap')
@@ -1367,6 +1438,36 @@ describe('SpatialProvider integration', () => {
 
     expect(discoverSpy).not.toHaveBeenCalled();
     expect(sdkQueries().queryByText(/Learning your app/)).toBeNull();
+  });
+
+  it('skips app-map discovery when disabled and uses the local fallback map', async () => {
+    const discoverSpy = vi.spyOn(DOMScannerModule, 'discoverAppMap');
+    const onAppMapped = vi.fn();
+
+    render(
+      <SpatialProvider
+        modalities={[]}
+        trustPolicy={{
+          features: {
+            appMapDiscovery: false
+          }
+        }}
+        onAppMapped={onAppMapped}
+      >
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(discoverSpy).not.toHaveBeenCalled();
+    expect(sdkQueries().queryByText(/Learning your app/)).toBeNull();
+    expect(onAppMapped).toHaveBeenCalled();
+    expect(onAppMapped.mock.calls.at(-1)?.[0]).toMatchObject({
+      routeCount: 1
+    });
   });
 
   it('reruns discovery when scoped app-map metadata mismatches', async () => {

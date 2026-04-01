@@ -1,10 +1,18 @@
 import { createCapabilityMap } from './CapabilityMap';
+import { matchesPolicySelectors } from './contextPolicy';
 import { isSdkUiElement } from './sdkUi';
 import type { AppMap, AppMapLocatorRef, AppMapSummary, DOMCapabilityMap, DOMElementDescriptor, RouteMap } from '../types';
 
 type PrimitiveHint = string | number | boolean | null;
 type PropsHint = Record<string, PrimitiveHint>;
 type NavigateFn = (path: string) => void | Promise<unknown>;
+
+export interface DOMScannerPolicy {
+  reactHints?: boolean;
+  routerHints?: boolean;
+  excludedSelectors?: string[];
+  captureElements?: boolean;
+}
 
 interface RouteDefinition {
   path: string;
@@ -50,6 +58,13 @@ const DISCOVERY_MAX_ROUTES = 32;
 
 const INTERACTIVE_TAGS = new Set(['button', 'input', 'textarea', 'select', 'a', 'form']);
 const INTERACTIVE_ROLES = new Set(['button', 'link', 'textbox', 'combobox', 'menuitem', 'tab']);
+const DEFAULT_DOM_SCANNER_POLICY: Required<DOMScannerPolicy> = {
+  reactHints: true,
+  routerHints: true,
+  excludedSelectors: [],
+  captureElements: true
+};
+let activeDOMScannerPolicy: Required<DOMScannerPolicy> = DEFAULT_DOM_SCANNER_POLICY;
 
 export interface AppMapCacheMetadata {
   schemaVersion: string;
@@ -102,6 +117,32 @@ interface AppMapSanitizeResult {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function normalizeDOMScannerPolicy(policy: DOMScannerPolicy | undefined): Required<DOMScannerPolicy> {
+  const excludedSelectors = Array.isArray(policy?.excludedSelectors)
+    ? policy.excludedSelectors.map((selector) => selector.trim()).filter(Boolean)
+    : [];
+
+  return {
+    reactHints: policy?.reactHints !== false,
+    routerHints: policy?.routerHints !== false,
+    excludedSelectors,
+    captureElements: policy?.captureElements !== false
+  };
+}
+
+async function withDOMScannerPolicy<T>(
+  policy: DOMScannerPolicy | undefined,
+  callback: () => Promise<T> | T
+): Promise<T> {
+  const previousPolicy = activeDOMScannerPolicy;
+  activeDOMScannerPolicy = normalizeDOMScannerPolicy(policy);
+  try {
+    return await callback();
+  } finally {
+    activeDOMScannerPolicy = previousPolicy;
+  }
 }
 
 function textContent(value: string | null | undefined): string {
@@ -240,8 +281,19 @@ function isVisible(element: Element): boolean {
   return withinX && withinY;
 }
 
+function isExcludedByDOMScannerPolicy(element: Element | null | undefined): boolean {
+  if (!element || !activeDOMScannerPolicy.excludedSelectors.length) {
+    return false;
+  }
+
+  return matchesPolicySelectors({
+    policySelectors: activeDOMScannerPolicy.excludedSelectors,
+    element
+  });
+}
+
 function isNonSdkElement<T extends Element>(element: T | null | undefined): element is T {
-  return Boolean(element) && !isSdkUiElement(element);
+  return Boolean(element) && !isSdkUiElement(element) && !isExcludedByDOMScannerPolicy(element);
 }
 
 function queryNonSdkElements<T extends Element>(root: ParentNode, selector: string): T[] {
@@ -592,6 +644,10 @@ function walkFiber(root: FiberNode, visitor: (fiber: FiberNode) => boolean | voi
 }
 
 function discoverFiberRoots(): FiberNode[] {
+  if (!activeDOMScannerPolicy.reactHints) {
+    return [];
+  }
+
   const roots = new Set<FiberNode>();
   const candidates = new Set<Element>();
 
@@ -609,7 +665,7 @@ function discoverFiberRoots(): FiberNode[] {
   });
 
   for (const candidate of candidates) {
-    if (isSdkUiElement(candidate)) {
+    if (isSdkUiElement(candidate) || isExcludedByDOMScannerPolicy(candidate)) {
       continue;
     }
 
@@ -628,7 +684,7 @@ function discoverFiberRoots(): FiberNode[] {
     let scanned = 0;
 
     while (node && scanned < 800) {
-      const fiber = isSdkUiElement(node) ? null : getFiberRoot(node);
+      const fiber = isSdkUiElement(node) || isExcludedByDOMScannerPolicy(node) ? null : getFiberRoot(node);
       if (fiber) {
         const rootFiber = toRootFiber(fiber);
         if (!isSdkUiFiberRoot(rootFiber)) {
@@ -1124,6 +1180,19 @@ function collectRouterDetails(
 }
 
 function discoverRouterSnapshot(): RouterSnapshot {
+  if (!activeDOMScannerPolicy.routerHints) {
+    const domRoutes = discoverRoutesFromDom();
+    return {
+      currentRoute: normalizePath(window.location.pathname),
+      routes: domRoutes.map((path) => ({
+        path: normalizePath(path),
+        navigatePath: toNavigablePath(path),
+        componentName: 'UnknownRoute'
+      })),
+      navigate: null
+    };
+  }
+
   const roots = discoverFiberRoots();
   const routeDefinitions = new Map<string, RouteDefinition>();
   const currentRoute = { value: normalizePath(window.location.pathname) };
@@ -1132,6 +1201,11 @@ function discoverRouterSnapshot(): RouterSnapshot {
 
   for (const root of roots) {
     walkFiber(root, (fiber) => {
+      const stateElement = fiberStateElement(fiber.stateNode);
+      if (stateElement && (isSdkUiElement(stateElement) || isExcludedByDOMScannerPolicy(stateElement))) {
+        return false;
+      }
+
       if (isRecord(fiber.memoizedProps)) {
         collectRouterDetails(fiber.memoizedProps, routeDefinitions, currentRoute, navigateRef, visited);
       }
@@ -1368,6 +1442,10 @@ function applyRouterSignals(
   routeParams: Record<string, string>,
   currentRoute: { value: string }
 ): void {
+  if (!activeDOMScannerPolicy.routerHints) {
+    return;
+  }
+
   const maybePath = [value.path, value.to, value.href];
   for (const entry of maybePath) {
     if (typeof entry === 'string' && entry.startsWith('/')) {
@@ -1425,6 +1503,15 @@ function scanFromFiber(): {
   currentRoute: string;
   routeParams: Record<string, string>;
 } {
+  if (!activeDOMScannerPolicy.reactHints) {
+    return {
+      elements: [],
+      routes: [normalizePath(window.location.pathname)],
+      currentRoute: normalizePath(window.location.pathname),
+      routeParams: {}
+    };
+  }
+
   const roots = discoverFiberRoots();
 
   if (!roots.length) {
@@ -1446,7 +1533,7 @@ function scanFromFiber(): {
   for (const root of roots) {
     walkFiber(root, (fiber) => {
       const stateElement = fiberStateElement(fiber.stateNode);
-      if (stateElement && isSdkUiElement(stateElement)) {
+      if (stateElement && (isSdkUiElement(stateElement) || isExcludedByDOMScannerPolicy(stateElement))) {
         return false;
       }
 
@@ -1463,7 +1550,7 @@ function scanFromFiber(): {
         return;
       }
 
-      if (!isVisible(domNode)) {
+      if (!isVisible(domNode) || isExcludedByDOMScannerPolicy(domNode) || !activeDOMScannerPolicy.captureElements) {
         return;
       }
 
@@ -1510,7 +1597,7 @@ function scanFallbackElements(): DOMElementDescriptor[] {
   let elementCounter = 0;
 
   return Array.from(document.querySelectorAll<HTMLElement>(selector))
-    .filter((element) => !isSdkUiElement(element) && isVisible(element))
+    .filter((element) => isNonSdkElement(element) && isVisible(element) && activeDOMScannerPolicy.captureElements)
     .map((element) => {
       elementCounter += 1;
       const rect = element.getBoundingClientRect();
@@ -1704,43 +1791,51 @@ function scanCountBadges(): DOMCapabilityMap['countBadges'] {
 }
 
 /** Scans React Fiber runtime first, with DOM fallback only when Fiber is unavailable. */
-export function scanDOM(): DOMCapabilityMap {
-  const fiberScan = scanFromFiber();
-  const elements = fiberScan.elements.length ? fiberScan.elements : scanFallbackElements();
+export function scanDOM(policy?: DOMScannerPolicy): DOMCapabilityMap {
+  const resolvedPolicy = normalizeDOMScannerPolicy(policy);
+  const previousPolicy = activeDOMScannerPolicy;
+  activeDOMScannerPolicy = resolvedPolicy;
 
-  const routes = new Set<string>(fiberScan.routes);
-  for (const route of discoverRoutesFromDom()) {
-    routes.add(route);
+  try {
+    const fiberScan = scanFromFiber();
+    const elements = fiberScan.elements.length ? fiberScan.elements : scanFallbackElements();
+
+    const routes = new Set<string>(fiberScan.routes);
+    for (const route of discoverRoutesFromDom()) {
+      routes.add(route);
+    }
+
+    const headings = queryVisibleNonSdkElements<HTMLHeadingElement>(document, 'h1, h2, h3')
+      .filter((heading) => textContent(heading.textContent))
+      .map((heading) => ({
+        level: heading.tagName.toLowerCase() as 'h1' | 'h2' | 'h3',
+        text: textContent(heading.textContent)
+      }));
+
+    return createCapabilityMap({
+      elements,
+      routes: Array.from(routes),
+      currentRoute: fiberScan.currentRoute || window.location.pathname,
+      currentUrl: window.location.href,
+      routeParams: fiberScan.routeParams,
+      pageTitle: document.title,
+      headings,
+      navigation: scanNavigation(),
+      formState: scanFormState(elements),
+      buttonsState: scanButtonsState(elements),
+      visibleErrors: scanVisibleErrors(),
+      dialogs: scanDialogs(),
+      tableRows: scanTableRows(),
+      listItems: scanListItems(),
+      cards: scanCards(),
+      statusBadges: scanStatusBadges(),
+      stateHints: scanStateHints(),
+      activeItems: scanActiveItems(),
+      countBadges: scanCountBadges()
+    });
+  } finally {
+    activeDOMScannerPolicy = previousPolicy;
   }
-
-  const headings = queryVisibleNonSdkElements<HTMLHeadingElement>(document, 'h1, h2, h3')
-    .filter((heading) => textContent(heading.textContent))
-    .map((heading) => ({
-      level: heading.tagName.toLowerCase() as 'h1' | 'h2' | 'h3',
-      text: textContent(heading.textContent)
-    }));
-
-  return createCapabilityMap({
-    elements,
-    routes: Array.from(routes),
-    currentRoute: fiberScan.currentRoute || window.location.pathname,
-    currentUrl: window.location.href,
-    routeParams: fiberScan.routeParams,
-    pageTitle: document.title,
-    headings,
-    navigation: scanNavigation(),
-    formState: scanFormState(elements),
-    buttonsState: scanButtonsState(elements),
-    visibleErrors: scanVisibleErrors(),
-    dialogs: scanDialogs(),
-    tableRows: scanTableRows(),
-    listItems: scanListItems(),
-    cards: scanCards(),
-    statusBadges: scanStatusBadges(),
-    stateHints: scanStateHints(),
-    activeItems: scanActiveItems(),
-    countBadges: scanCountBadges()
-  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3549,161 +3644,169 @@ export function syncAppMapCacheMetadata(scope: AppCacheScope = resolveCurrentApp
 // Backward-compatible alias.
 export const syncAppMapCacheVersion = syncAppMapCacheMetadata;
 
-export function getReactRouterRouteCount(): number {
-  return discoverRouterSnapshot().routes.length;
+export function getReactRouterRouteCount(policy?: DOMScannerPolicy): number {
+  return normalizeDOMScannerPolicy(policy).routerHints
+    ? discoverRouterSnapshot().routes.length
+    : discoverRoutesFromDom().length;
 }
 
-export function getRouterNavigateFromFiber(): ((path: string) => void | Promise<unknown>) | null {
+export function getRouterNavigateFromFiber(policy?: DOMScannerPolicy): ((path: string) => void | Promise<unknown>) | null {
+  if (normalizeDOMScannerPolicy(policy).routerHints === false) {
+    return null;
+  }
+
   return discoverRouterSnapshot().navigate;
 }
 
-export async function discoverAppMap(): Promise<AppMap> {
-  const readiness = await waitForDiscoveryBootstrapSnapshot();
-  const snapshot = readiness.snapshot;
-  // eslint-disable-next-line no-console
-  console.log('[Exocor Discovery] readiness:', readiness.outcome, {
-    checks: readiness.checks,
-    routes: snapshot.routes.length,
-    hasNavigate: Boolean(snapshot.navigate)
-  });
-  // eslint-disable-next-line no-console
-  console.log('[Exocor Discovery] snapshot:', snapshot);
-  const originRoute = normalizePath(snapshot.currentRoute || window.location.pathname);
-  const routes = (snapshot?.routes || []).filter((route): route is RouteDefinition => Boolean(route));
-  const discoveredRoutes: RouteMap[] = [];
-  const routeQueue: RouteDefinition[] = [];
-  const queuedPaths = new Set<string>();
-  const scannedPaths = new Set<string>();
-  let discoveryNavigate: NavigateFn | null = snapshot.navigate;
-
-  const enqueueRoute = (route: RouteDefinition, source: 'snapshot' | 'navigation_link'): void => {
-    const normalizedPath = normalizePath(route?.path || route?.navigatePath || originRoute);
-    if (!isSafeDiscoveryRoute(normalizedPath, originRoute)) {
-      return;
-    }
-    if (queuedPaths.has(normalizedPath) || scannedPaths.has(normalizedPath)) {
-      return;
-    }
-    if (queuedPaths.size + scannedPaths.size >= DISCOVERY_MAX_ROUTES) {
-      return;
-    }
-    routeQueue.push({
-      path: normalizedPath,
-      navigatePath: toNavigablePath(route?.navigatePath || normalizedPath),
-      componentName: route?.componentName || 'UnknownRoute'
-    });
-    queuedPaths.add(normalizedPath);
+export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap> {
+  return withDOMScannerPolicy(policy, async () => {
+    const readiness = await waitForDiscoveryBootstrapSnapshot();
+    const snapshot = readiness.snapshot;
     // eslint-disable-next-line no-console
-    console.log('[Exocor Discovery] route enqueue:', normalizedPath, 'source:', source);
-  };
+    console.log('[Exocor Discovery] readiness:', readiness.outcome, {
+      checks: readiness.checks,
+      routes: snapshot.routes.length,
+      hasNavigate: Boolean(snapshot.navigate)
+    });
+    // eslint-disable-next-line no-console
+    console.log('[Exocor Discovery] snapshot:', snapshot);
+    const originRoute = normalizePath(snapshot.currentRoute || window.location.pathname);
+    const routes = (snapshot?.routes || []).filter((route): route is RouteDefinition => Boolean(route));
+    const discoveredRoutes: RouteMap[] = [];
+    const routeQueue: RouteDefinition[] = [];
+    const queuedPaths = new Set<string>();
+    const scannedPaths = new Set<string>();
+    let discoveryNavigate: NavigateFn | null = snapshot.navigate;
 
-  for (const route of routes) {
-    enqueueRoute(route, 'snapshot');
-  }
-  if (!routeQueue.length) {
-    enqueueRoute({ path: originRoute, navigatePath: originRoute, componentName: 'UnknownRoute' }, 'snapshot');
-  }
-
-  // eslint-disable-next-line no-console
-  console.log('[Exocor Discovery] routes to scan:', routeQueue.length, routeQueue);
-
-  while (routeQueue.length && discoveredRoutes.length < DISCOVERY_MAX_ROUTES) {
-    const route = routeQueue.shift() as RouteDefinition;
-    const normalizedRoutePath = normalizePath(route.path || originRoute);
-    queuedPaths.delete(normalizedRoutePath);
-    if (scannedPaths.has(normalizedRoutePath)) {
-      continue;
-    }
-    scannedPaths.add(normalizedRoutePath);
-
-    const liveSnapshot = discoverRouterSnapshot();
-    if (liveSnapshot.navigate) {
-      discoveryNavigate = liveSnapshot.navigate;
-    }
-
-    try {
-      const targetPath = toNavigablePath(route?.navigatePath || route?.path || originRoute);
-      const navigated = await navigateForDiscovery(targetPath, discoveryNavigate);
-      // eslint-disable-next-line no-console
-      console.log('[Exocor Discovery] navigated:', navigated, 'to:', targetPath);
-      if (!navigated) {
-        continue;
+    const enqueueRoute = (route: RouteDefinition, source: 'snapshot' | 'navigation_link'): void => {
+      const normalizedPath = normalizePath(route?.path || route?.navigatePath || originRoute);
+      if (!isSafeDiscoveryRoute(normalizedPath, originRoute)) {
+        return;
       }
-
-      const landedPath = normalizePath(window.location.pathname);
-      if (landedPath !== normalizePath(targetPath)) {
-        continue;
+      if (queuedPaths.has(normalizedPath) || scannedPaths.has(normalizedPath)) {
+        return;
       }
-
-      const matchedRoute =
-        (liveSnapshot.routes || []).find((entry) => normalizePath(entry.path) === normalizedRoutePath) ||
-        (liveSnapshot.routes || []).find((entry) => normalizePath(entry.navigatePath) === normalizePath(targetPath));
-      const componentName =
-        matchedRoute?.componentName && matchedRoute.componentName !== 'UnknownRoute'
-          ? matchedRoute.componentName
-          : route?.componentName || 'UnknownRoute';
-
-      const scannedRoute = await scanRouteMap(normalizedRoutePath, componentName);
-      discoveredRoutes.push(scannedRoute);
-
-      for (const navLink of scannedRoute.navigationLinks || []) {
-        const navPath = normalizePath(navLink.path || '');
-        enqueueRoute(
-          {
-            path: navPath,
-            navigatePath: navPath,
-            componentName: 'UnknownRoute'
-          },
-          'navigation_link'
-        );
+      if (queuedPaths.size + scannedPaths.size >= DISCOVERY_MAX_ROUTES) {
+        return;
       }
-    } catch {
-      continue;
-    }
-  }
-
-  if (!discoveredRoutes.length) {
-    try {
-      discoveredRoutes.push(await scanRouteMap(originRoute, 'UnknownRoute'));
-    } catch {
-      discoveredRoutes.push({
-        path: originRoute,
-        componentName: 'UnknownRoute',
-        title: document.title || originRoute,
-        navigationLinks: [],
-        modalTriggers: [],
-        formFields: [],
-        buttons: [],
-        filters: [],
-        tabs: [],
-        headings: []
+      routeQueue.push({
+        path: normalizedPath,
+        navigatePath: toNavigablePath(route?.navigatePath || normalizedPath),
+        componentName: route?.componentName || 'UnknownRoute'
       });
+      queuedPaths.add(normalizedPath);
+      // eslint-disable-next-line no-console
+      console.log('[Exocor Discovery] route enqueue:', normalizedPath, 'source:', source);
+    };
+
+    for (const route of routes) {
+      enqueueRoute(route, 'snapshot');
     }
-  }
-
-  try {
-    const currentRoute = normalizeDiscoveryPath(window.location.pathname);
-    if (currentRoute !== normalizeDiscoveryPath(originRoute)) {
-      const restoreSnapshot = discoverRouterSnapshot();
-      await navigateForDiscovery(originRoute, restoreSnapshot.navigate || discoveryNavigate);
+    if (!routeQueue.length) {
+      enqueueRoute({ path: originRoute, navigatePath: originRoute, componentName: 'UnknownRoute' }, 'snapshot');
     }
-  } catch {
-    // Ignore navigation restore errors and still cache the discovered subset.
-  }
 
-  const appMap: AppMap = {
-    version: APP_MAP_VERSION,
-    discoveredAt: Date.now(),
-    routeCount: discoveredRoutes.length,
-    routes: discoveredRoutes
-  };
+    // eslint-disable-next-line no-console
+    console.log('[Exocor Discovery] routes to scan:', routeQueue.length, routeQueue);
 
-  // eslint-disable-next-line no-console
-  console.log('[Exocor Discovery] saving map with routes:', discoveredRoutes.length);
-  // eslint-disable-next-line no-console
-  console.log('[Exocor Discovery] map ready:', appMap.routes.length, 'routes', appMap.routes.map((r) => r.path));
-  saveAppMapToCache(appMap);
-  return appMap;
+    while (routeQueue.length && discoveredRoutes.length < DISCOVERY_MAX_ROUTES) {
+      const route = routeQueue.shift() as RouteDefinition;
+      const normalizedRoutePath = normalizePath(route.path || originRoute);
+      queuedPaths.delete(normalizedRoutePath);
+      if (scannedPaths.has(normalizedRoutePath)) {
+        continue;
+      }
+      scannedPaths.add(normalizedRoutePath);
+
+      const liveSnapshot = discoverRouterSnapshot();
+      if (liveSnapshot.navigate) {
+        discoveryNavigate = liveSnapshot.navigate;
+      }
+
+      try {
+        const targetPath = toNavigablePath(route?.navigatePath || route?.path || originRoute);
+        const navigated = await navigateForDiscovery(targetPath, discoveryNavigate);
+        // eslint-disable-next-line no-console
+        console.log('[Exocor Discovery] navigated:', navigated, 'to:', targetPath);
+        if (!navigated) {
+          continue;
+        }
+
+        const landedPath = normalizePath(window.location.pathname);
+        if (landedPath !== normalizePath(targetPath)) {
+          continue;
+        }
+
+        const matchedRoute =
+          (liveSnapshot.routes || []).find((entry) => normalizePath(entry.path) === normalizedRoutePath) ||
+          (liveSnapshot.routes || []).find((entry) => normalizePath(entry.navigatePath) === normalizePath(targetPath));
+        const componentName =
+          matchedRoute?.componentName && matchedRoute.componentName !== 'UnknownRoute'
+            ? matchedRoute.componentName
+            : route?.componentName || 'UnknownRoute';
+
+        const scannedRoute = await scanRouteMap(normalizedRoutePath, componentName);
+        discoveredRoutes.push(scannedRoute);
+
+        for (const navLink of scannedRoute.navigationLinks || []) {
+          const navPath = normalizePath(navLink.path || '');
+          enqueueRoute(
+            {
+              path: navPath,
+              navigatePath: navPath,
+              componentName: 'UnknownRoute'
+            },
+            'navigation_link'
+          );
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    if (!discoveredRoutes.length) {
+      try {
+        discoveredRoutes.push(await scanRouteMap(originRoute, 'UnknownRoute'));
+      } catch {
+        discoveredRoutes.push({
+          path: originRoute,
+          componentName: 'UnknownRoute',
+          title: document.title || originRoute,
+          navigationLinks: [],
+          modalTriggers: [],
+          formFields: [],
+          buttons: [],
+          filters: [],
+          tabs: [],
+          headings: []
+        });
+      }
+    }
+
+    try {
+      const currentRoute = normalizeDiscoveryPath(window.location.pathname);
+      if (currentRoute !== normalizeDiscoveryPath(originRoute)) {
+        const restoreSnapshot = discoverRouterSnapshot();
+        await navigateForDiscovery(originRoute, restoreSnapshot.navigate || discoveryNavigate);
+      }
+    } catch {
+      // Ignore navigation restore errors and still cache the discovered subset.
+    }
+
+    const appMap: AppMap = {
+      version: APP_MAP_VERSION,
+      discoveredAt: Date.now(),
+      routeCount: discoveredRoutes.length,
+      routes: discoveredRoutes
+    };
+
+    // eslint-disable-next-line no-console
+    console.log('[Exocor Discovery] saving map with routes:', discoveredRoutes.length);
+    // eslint-disable-next-line no-console
+    console.log('[Exocor Discovery] map ready:', appMap.routes.length, 'routes', appMap.routes.map((r) => r.path));
+    saveAppMapToCache(appMap);
+    return appMap;
+  });
 }
 
 export const __DOM_SCANNER_TESTING__ = {
@@ -3717,28 +3820,70 @@ function estimateTokens(payload: unknown): number {
 }
 
 export function summarizeAppMapForResolver(
-  appMap: AppMap | null | undefined,
+  appMap: AppMap | AppMapSummary | null | undefined,
   currentRoute: string,
-  tokenBudget = 800
+  tokenBudget = 800,
+  anchorRoute?: string | null
 ): AppMapSummary | null {
   if (!appMap) {
     return null;
   }
 
+  if ('tokenEstimate' in appMap) {
+    const normalizedCurrent = normalizePath(currentRoute || '/');
+    const normalizedAnchor = anchorRoute ? normalizePath(anchorRoute) : null;
+    const summary: AppMapSummary = {
+      ...appMap,
+      routes: [...appMap.routes].sort((a, b) => {
+        const aPath = normalizePath(a?.path || '/');
+        const bPath = normalizePath(b?.path || '/');
+        if (aPath === normalizedCurrent) {
+          return -1;
+        }
+        if (bPath === normalizedCurrent) {
+          return 1;
+        }
+        if (normalizedAnchor && aPath === normalizedAnchor) {
+          return -1;
+        }
+        if (normalizedAnchor && bPath === normalizedAnchor) {
+          return 1;
+        }
+        return (a?.path || '').localeCompare(b?.path || '');
+      })
+    };
+
+    summary.tokenEstimate = estimateTokens(summary);
+    while (summary.tokenEstimate > tokenBudget && summary.routes.length > 1) {
+      summary.routes.pop();
+      summary.tokenEstimate = estimateTokens(summary);
+    }
+    return summary;
+  }
+
   const normalizedCurrent = normalizePath(currentRoute || '/');
+  const normalizedAnchor = anchorRoute ? normalizePath(anchorRoute) : null;
   const orderedRoutes = [...(appMap?.routes || [])]
     .filter((route): route is RouteMap => Boolean(route))
     .map((route) => sanitizeRouteMapEntry(route))
     .filter((route): route is RouteMap => Boolean(route))
     .sort((a, b) => {
-    if (normalizePath(a?.path || '/') === normalizedCurrent) {
-      return -1;
-    }
-    if (normalizePath(b?.path || '/') === normalizedCurrent) {
-      return 1;
-    }
-    return (a?.path || '').localeCompare(b?.path || '');
-  });
+      const aPath = normalizePath(a?.path || '/');
+      const bPath = normalizePath(b?.path || '/');
+      if (aPath === normalizedCurrent) {
+        return -1;
+      }
+      if (bPath === normalizedCurrent) {
+        return 1;
+      }
+      if (normalizedAnchor && aPath === normalizedAnchor) {
+        return -1;
+      }
+      if (normalizedAnchor && bPath === normalizedAnchor) {
+        return 1;
+      }
+      return (a?.path || '').localeCompare(b?.path || '');
+    });
 
   const summary: AppMapSummary = {
     version: appMap?.version || APP_MAP_VERSION,
@@ -3922,10 +4067,13 @@ export class DOMScanner {
   private observer: MutationObserver | null = null;
   private updateTimer: number | null = null;
 
-  constructor(private readonly onUpdate: (map: DOMCapabilityMap) => void) {}
+  constructor(
+    private readonly onUpdate: (map: DOMCapabilityMap) => void,
+    private readonly getPolicy?: () => DOMScannerPolicy
+  ) {}
 
   refresh(): DOMCapabilityMap {
-    const map = scanDOM();
+    const map = scanDOM(this.getPolicy?.());
     this.onUpdate(map);
     return map;
   }

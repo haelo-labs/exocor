@@ -14,6 +14,7 @@ import {
   buildScopedStorageKey,
   clearAppMapCache,
   DOMScanner,
+  type DOMScannerPolicy,
   getRouterNavigateFromFiber,
   readCachedAppMap,
   readCachedAppMapWithReason,
@@ -22,7 +23,9 @@ import {
 } from '../core/DOMScanner';
 import { DeterministicIntentResolver } from '../core/DeterministicIntentResolver';
 import { RemoteIntentResolver } from '../core/RemoteIntentResolver';
+import { shapeResolverContext, shapeResolverNewElementsForTransport } from '../core/ResolverContextShaper';
 import { createToolRegistry, normalizeToolRoutePath } from '../core/ToolRegistry';
+import { resolveContextPolicy, resolveTrustPolicy } from '../core/contextPolicy';
 import {
   ChatPanel,
   type CommandHistoryItem,
@@ -853,13 +856,14 @@ function resolveFocusedElement(
 
 function resolveGazeTarget(
   map: DOMCapabilityMap,
-  gazeState: GazeState
+  gazeState: GazeState,
+  scannerPolicy?: DOMScannerPolicy
 ): { elementId: string | null; componentName: string | null; text: string } | null {
   if (gazeState.gazeTarget) {
     const matchedElement =
       map.elements.find((element) => element.id === gazeState.gazeTarget) ||
       map.elements.find((element) => element.selector === gazeState.gazeTarget) ||
-      DOMScannerModule.scanDOM().elements.find(
+      DOMScannerModule.scanDOM(scannerPolicy).elements.find(
         (element) => element.id === gazeState.gazeTarget || element.selector === gazeState.gazeTarget
       );
     return {
@@ -903,7 +907,8 @@ function buildEnrichedContext(
   map: DOMCapabilityMap,
   gazeState: GazeState,
   preferredFocusedElement: HTMLElement | null = null,
-  preferredTextEntryElement: HTMLElement | null = null
+  preferredTextEntryElement: HTMLElement | null = null,
+  scannerPolicy?: DOMScannerPolicy
 ): Record<string, unknown> {
   if (inputMethod === 'text') {
     return {
@@ -915,7 +920,7 @@ function buildEnrichedContext(
 
   return {
     inputMethod,
-    gazeTarget: resolveGazeTarget(map, gazeState),
+    gazeTarget: resolveGazeTarget(map, gazeState, scannerPolicy),
     gazePosition: {
       x: gazeState.gazeX,
       y: gazeState.gazeY
@@ -933,6 +938,8 @@ export function SpatialProvider({
   modalities = DEFAULT_MODALITIES,
   debug = Boolean(false),
   tools,
+  contextPolicy,
+  trustPolicy,
   onAppMapped
 }: SpatialProviderProps): JSX.Element {
   const themeMode = useSdkThemeMode();
@@ -940,6 +947,17 @@ export function SpatialProvider({
   const availableModalities = useMemo(
     () => DEFAULT_MODALITIES.filter((modality) => modalities.includes(modality)),
     [modalities]
+  );
+  const resolvedContextPolicy = useMemo(() => resolveContextPolicy(contextPolicy), [contextPolicy]);
+  const resolvedTrustPolicy = useMemo(() => resolveTrustPolicy(trustPolicy), [trustPolicy]);
+  const domScannerPolicy = useMemo<DOMScannerPolicy>(
+    () => ({
+      reactHints: resolvedTrustPolicy.features.reactHints,
+      routerHints: resolvedTrustPolicy.features.routerHints,
+      excludedSelectors: resolvedTrustPolicy.neverScan,
+      captureElements: resolvedTrustPolicy.features.liveDomScanning
+    }),
+    [resolvedTrustPolicy]
   );
   const initialModalityScopeRef = useRef(resolveCurrentAppCacheScope());
   const modalityStorageKey = useMemo(
@@ -1103,7 +1121,11 @@ export function SpatialProvider({
       }),
     [backendUrl, debug]
   );
-  const toolRegistry = useMemo(() => createToolRegistry(tools || EMPTY_TOOLS), [tools]);
+  const effectiveTools = useMemo(
+    () => (resolvedTrustPolicy.features.tools ? tools || EMPTY_TOOLS : EMPTY_TOOLS),
+    [resolvedTrustPolicy.features.tools, tools]
+  );
+  const toolRegistry = useMemo(() => createToolRegistry(effectiveTools), [effectiveTools]);
 
   useEffect(() => {
     resolverRef.current = resolver;
@@ -1191,6 +1213,15 @@ export function SpatialProvider({
       reason: string;
       forceRefresh?: boolean;
     }): Promise<AppMap | null> => {
+      if (!resolvedTrustPolicy.features.appMapDiscovery) {
+        const fallbackAppMap = buildFallbackAppMapFromDom(domMapRef.current);
+        if (isMountedRef.current) {
+          setAndNotifyAppMap(fallbackAppMap);
+          setIsDiscovering(false);
+        }
+        return fallbackAppMap;
+      }
+
       if (discoveryPromiseRef.current) {
         return discoveryPromiseRef.current;
       }
@@ -1210,7 +1241,7 @@ export function SpatialProvider({
 
       discoveryPromiseRef.current = (async () => {
         try {
-          const discovered = await DOMScannerModule.discoverAppMap();
+          const discovered = await DOMScannerModule.discoverAppMap(domScannerPolicy);
           if (isMountedRef.current) {
             setAndNotifyAppMap(discovered);
           }
@@ -1230,7 +1261,7 @@ export function SpatialProvider({
 
       return discoveryPromiseRef.current;
     },
-    [setAndNotifyAppMap]
+    [domScannerPolicy, resolvedTrustPolicy.features.appMapDiscovery, setAndNotifyAppMap]
   );
 
   const awaitBootstrappedAppMap = useCallback(async (): Promise<AppMap | null> => {
@@ -1341,6 +1372,13 @@ export function SpatialProvider({
   }, [commandHistory, isHistoryHydrated]);
 
   useEffect(() => {
+    if (!resolvedTrustPolicy.features.appMapDiscovery) {
+      const fallbackAppMap = buildFallbackAppMapFromDom(domMapRef.current);
+      setAndNotifyAppMap(fallbackAppMap);
+      setIsDiscovering(false);
+      return;
+    }
+
     const scope = resolveCurrentAppCacheScope();
     const cached = readCachedAppMapWithReason(scope);
 
@@ -1354,7 +1392,13 @@ export function SpatialProvider({
       showOverlay: true,
       reason: cached.reason
     });
-  }, [runAppMapDiscovery, setAndNotifyAppMap]);
+  }, [resolvedTrustPolicy.features.appMapDiscovery, runAppMapDiscovery, setAndNotifyAppMap]);
+
+  useEffect(() => {
+    if (!resolvedTrustPolicy.features.appMapDiscovery) {
+      setAndNotifyAppMap(buildFallbackAppMapFromDom(domMap));
+    }
+  }, [domMap, resolvedTrustPolicy.features.appMapDiscovery, setAndNotifyAppMap]);
 
   const appendCommandHistoryTrace = useCallback((id: string, label: string) => {
     const now = Date.now();
@@ -1448,7 +1492,7 @@ export function SpatialProvider({
     let targetId = directMatch?.id || selectorMatch?.id || null;
 
     if (!targetId && sample.target instanceof HTMLElement) {
-      const liveMap = DOMScannerModule.scanDOM();
+      const liveMap = DOMScannerModule.scanDOM(domScannerPolicy);
       const liveMatch =
         findElementByNode(sample.target, liveMap.elements) ||
         (targetSelector ? liveMap.elements.find((element) => element.selector === targetSelector) || null : null);
@@ -1467,7 +1511,7 @@ export function SpatialProvider({
       gazeY: sample.y,
       isCalibrated: sample.isCalibrated
     });
-  }, []);
+  }, [domScannerPolicy]);
 
   const onPinchState = useCallback((sample: { isPinching: boolean }) => {
     if (!activeModalitiesRef.current.gesture) {
@@ -1594,6 +1638,25 @@ export function SpatialProvider({
     resetVoiceGazeSnapshot();
   }, [clearSilenceTimer, resetVoiceGazeSnapshot]);
 
+  const shapeRemoteResolverPayload = useCallback(
+    (input: Parameters<typeof shapeResolverContext>[0]['input'], runtimeContext?: Record<string, unknown>) => {
+      const shaped = shapeResolverContext({
+        input,
+        runtimeContext,
+        contextPolicy: resolvedContextPolicy,
+        trustPolicy: resolvedTrustPolicy
+      });
+
+      if (debug) {
+        // eslint-disable-next-line no-console
+        console.log('[Exocor] Resolver context report:', shaped.report);
+      }
+
+      return shaped;
+    },
+    [debug, resolvedContextPolicy, resolvedTrustPolicy]
+  );
+
   const executeCommand = useCallback(
     async (
       command: string,
@@ -1616,26 +1679,29 @@ export function SpatialProvider({
         resolutionMap,
         commandGazeState,
         lastHostFocusedElementRef.current,
-        lastHostTextEntryElementRef.current
+        lastHostTextEntryElementRef.current,
+        domScannerPolicy
       );
-      const cachedAppMap = readCachedAppMap();
+      const cachedAppMap = resolvedTrustPolicy.features.appMapDiscovery ? readCachedAppMap() : null;
       const mountDiscoveryPromise = discoveryPromiseRef.current;
-      const latestCachedAppMap = readCachedAppMap();
+      const latestCachedAppMap = resolvedTrustPolicy.features.appMapDiscovery ? readCachedAppMap() : null;
       let availableAppMap =
-        appMapRef.current ||
+        (resolvedTrustPolicy.features.appMapDiscovery ? appMapRef.current : null) ||
         cachedAppMap ||
         (await Promise.race([
           awaitBootstrappedAppMap(),
           sleep(APP_MAP_BOOTSTRAP_GRACE_MS).then(() => null)
         ])) ||
-        appMapRef.current ||
+        (resolvedTrustPolicy.features.appMapDiscovery ? appMapRef.current : null) ||
         latestCachedAppMap;
       const shouldAwaitMountDiscoveryBeforeExecution =
-        !appMapRef.current && !cachedAppMap && Boolean(mountDiscoveryPromise);
+        resolvedTrustPolicy.features.appMapDiscovery && !appMapRef.current && !cachedAppMap && Boolean(mountDiscoveryPromise);
       if (!availableAppMap) {
         availableAppMap = buildFallbackAppMapFromDom(resolutionMap);
-        saveAppMapToCache(availableAppMap);
-        setAndNotifyAppMap(availableAppMap);
+        if (resolvedTrustPolicy.features.appMapDiscovery) {
+          saveAppMapToCache(availableAppMap);
+          setAndNotifyAppMap(availableAppMap);
+        }
       }
 
       const activePendingClarification = pendingClarification;
@@ -1673,7 +1739,7 @@ export function SpatialProvider({
         map: DOMCapabilityMap,
         commandText: string,
         completedSteps?: IntentStep[]
-      ) => ({
+      ): IntentResolutionInput => ({
         command: commandText,
         inputMethod,
         map,
@@ -1683,6 +1749,12 @@ export function SpatialProvider({
         gesture: gestureRef.current.gesture || 'none',
         ...(completedSteps ? { completedSteps } : {})
       });
+      const buildRemoteResolutionPayload = (
+        map: DOMCapabilityMap,
+        commandText: string,
+        completedSteps?: IntentStep[],
+        runtimeContext?: Record<string, unknown>
+      ) => shapeRemoteResolverPayload(buildResolutionInput(map, commandText, completedSteps), runtimeContext);
 
       const toolShortcutMatch =
         activePendingClarification || !toolRegistry.hasTools()
@@ -1692,7 +1764,7 @@ export function SpatialProvider({
               normalizeToolRoutePath(resolutionMap.currentRoute || window.location.pathname || '/')
             );
       const deterministicResolution =
-        activePendingClarification || !deterministicResolverRef.current
+        activePendingClarification || !deterministicResolverRef.current || !resolvedTrustPolicy.features.liveDomScanning
           ? null
           : toolShortcutMatch?.type === 'direct_execute'
             ? {
@@ -1707,9 +1779,7 @@ export function SpatialProvider({
                     resolutionCommand
                   )
                 );
-      if (!deterministicResolution && !resolverRef.current) {
-        return false;
-      }
+      const remoteResolverAvailable = resolvedTrustPolicy.features.remoteResolver && Boolean(resolverRef.current);
 
       const abortController = new AbortController();
       const signal = abortController.signal;
@@ -1770,12 +1840,12 @@ export function SpatialProvider({
         let usedAuthoritativePreferredTool = false;
         const refreshMapForExecution = (): DOMCapabilityMap => {
           const refreshed = domScannerRef.current?.refresh() || domMapRef.current;
-          routerNavigateRef.current = getRouterNavigateFromFiber();
+          routerNavigateRef.current = getRouterNavigateFromFiber(domScannerPolicy);
           setDomMap(refreshed);
           return refreshed;
         };
         const navigateWithFiberDriver = async (path: string): Promise<boolean> => {
-          const navigate = routerNavigateRef.current || getRouterNavigateFromFiber();
+          const navigate = routerNavigateRef.current || getRouterNavigateFromFiber(domScannerPolicy);
           routerNavigateRef.current = navigate;
           if (!navigate) {
             return false;
@@ -1823,7 +1893,7 @@ export function SpatialProvider({
             );
           }
         }
-        if (!resolvedPlan && strongPreferredTool && resolverRef.current) {
+        if (!resolvedPlan && strongPreferredTool) {
           if (!strongPreferredTool.parameters.length) {
             resolvedPlan = buildAuthoritativePreferredToolPlan(resolutionCommand, strongPreferredTool, {});
             resolutionPriority = 'app_map_only';
@@ -1840,10 +1910,16 @@ export function SpatialProvider({
                 `Using authoritative navigate -> tool path: ${strongPreferredTool.id}`
               );
             }
-          } else {
+          } else if (remoteResolverAvailable && resolverRef.current) {
             appendCommandHistoryTrace(historyEntryId, `Resolving arguments for preferred tool: ${strongPreferredTool.id}`);
+            const shapedPreferredToolPayload = buildRemoteResolutionPayload(
+              resolutionMap,
+              resolutionCommand,
+              undefined,
+              enrichedContext
+            );
             const preferredToolIntent = await resolverRef.current.resolvePreferredToolIntent(
-              buildResolutionInput(resolutionMap, resolutionCommand),
+              shapedPreferredToolPayload.input,
               strongPreferredTool.id,
               strongPreferredTool.preferredReason || 'strong semantic match',
               signal
@@ -1886,10 +1962,15 @@ export function SpatialProvider({
                 `Preferred tool could not cover the full intent authoritatively; using normal planner behavior: ${preferredToolIntent.reason}`
               );
             }
+          } else {
+            appendCommandHistoryTrace(
+              historyEntryId,
+              `Preferred tool requires remote argument planning, but remote resolver is disabled: ${strongPreferredTool.id}`
+            );
           }
         }
 
-        if (!resolvedPlan && resolverRef.current) {
+        if (!resolvedPlan && remoteResolverAvailable && resolverRef.current) {
           const useStreamExecution = inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution;
           const streamSanitizer = createStreamingStepSanitizer(baseCommand);
           const streamedSteps: IntentStep[] = [];
@@ -1946,12 +2027,17 @@ export function SpatialProvider({
             beginStreamingExecution();
           };
 
-          const streamResolutionInput = buildResolutionInput(resolutionMap, resolutionCommandForContext);
+          const streamResolutionPayload = buildRemoteResolutionPayload(
+            resolutionMap,
+            resolutionCommandForContext,
+            undefined,
+            enrichedContext
+          );
           let resolvedIntent;
           try {
             resolvedIntent = await resolverRef.current.resolveWithContextStreamInternal(
-              streamResolutionInput,
-              enrichedContext,
+              streamResolutionPayload.input,
+              streamResolutionPayload.runtimeContext,
               {
                 onResolutionPriority: (priority) => {
                   resolutionPriority = priority;
@@ -1995,12 +2081,29 @@ export function SpatialProvider({
           }
         }
 
+        if (!resolvedPlan && !remoteResolverAvailable) {
+          setIsResolving(false);
+          setResolutionStatus('unresolved');
+          const unavailableMessage = 'Remote resolver is disabled and no local plan matched';
+          setProgressMessage(unavailableMessage);
+          showPreview(unavailableMessage);
+          showToast('failed', unavailableMessage);
+          appendCommandHistoryTrace(historyEntryId, unavailableMessage);
+          updateCommandHistoryEntry(historyEntryId, 'failed', unavailableMessage);
+          return false;
+        }
+
         if (!resolvedPlan) {
           appendCommandHistoryTrace(historyEntryId, 'Falling back to DOM-only resolution');
           const fallbackMap = refreshMapForExecution();
-          const fallbackResolutionInput = buildResolutionInput(fallbackMap, resolutionCommand);
+          const fallbackResolutionInput = buildRemoteResolutionPayload(
+            fallbackMap,
+            resolutionCommand,
+            undefined,
+            enrichedContext
+          );
           resolutionPriority = 'dom_only';
-          resolvedPlan = await resolverRef.current!.resolve(fallbackResolutionInput, signal);
+          resolvedPlan = await resolverRef.current!.resolve(fallbackResolutionInput.input, signal);
           if (resolvedPlan) {
             resolvedPlan = {
               ...resolvedPlan,
@@ -2146,14 +2249,20 @@ export function SpatialProvider({
           (failureReasonLower.includes('target not found') ||
             (result.failedStep?.action === 'tool' && failureReasonLower.includes('current route')));
 
-        if (shouldRetryFailedStepWithPlanner && result.failedStep && resolverRef.current) {
+        if (shouldRetryFailedStepWithPlanner && result.failedStep && remoteResolverAvailable && resolverRef.current) {
           setProgressMessage('Retrying failed step with updated context...');
           showToast('planning', 'Retrying failed step with updated context...');
           appendCommandHistoryTrace(historyEntryId, 'Retrying failed step with updated context');
           const retryMap = refreshMapForExecution();
+          const retryResolutionPayload = buildRemoteResolutionPayload(
+            retryMap,
+            resolutionCommand,
+            undefined,
+            enrichedContext
+          );
 
           const retrySteps = await resolverRef.current.resolveForFailedStep(
-            buildResolutionInput(retryMap, resolutionCommand),
+            retryResolutionPayload.input,
             result.failedStep,
             result.failedStepReason || result.reason || 'Execution failed',
             signal
@@ -2188,6 +2297,7 @@ export function SpatialProvider({
           !result.executed &&
           allowDynamicReplan &&
           Boolean(result.newElementsAfterWait?.length) &&
+          remoteResolverAvailable &&
           resolverRef.current
         ) {
           setProgressMessage('Planning dynamic follow-up steps...');
@@ -2195,10 +2305,23 @@ export function SpatialProvider({
           appendCommandHistoryTrace(historyEntryId, 'Planning dynamic follow-up steps');
 
           const followUpMap = refreshMapForExecution();
+          const followUpResolutionPayload = buildRemoteResolutionPayload(
+            followUpMap,
+            resolutionCommand,
+            completedStepsHistory,
+            enrichedContext
+          );
+          const shapedNewElements = shapeResolverNewElementsForTransport({
+            command: resolutionCommand,
+            elements: result.newElementsAfterWait || [],
+            gazeTarget: commandGazeState.gazeTarget ?? null,
+            contextPolicy: resolvedContextPolicy,
+            trustPolicy: resolvedTrustPolicy
+          });
 
           const followUpSteps = await resolverRef.current.resolveForNewElements(
-            buildResolutionInput(followUpMap, resolutionCommand, completedStepsHistory),
-            result.newElementsAfterWait || [],
+            followUpResolutionPayload.input,
+            shapedNewElements,
             completedStepsHistory,
             signal
           );
@@ -2288,10 +2411,15 @@ export function SpatialProvider({
       addCommandHistoryEntry,
       appendCommandHistoryTrace,
       awaitBootstrappedAppMap,
+      domScannerPolicy,
       dismissToast,
       pendingClarification,
+      resolvedContextPolicy,
+      resolvedTrustPolicy,
       runAppMapDiscovery,
       setAndNotifyAppMap,
+      shapeRemoteResolverPayload,
+      shapeResolverNewElementsForTransport,
       showPreview,
       showToast,
       toolRegistry,
@@ -2323,7 +2451,7 @@ export function SpatialProvider({
   useEffect(() => {
     const scanner = new DOMScanner((map) => {
       setDomMap(map);
-    });
+    }, () => domScannerPolicy);
 
     domScannerRef.current = scanner;
     scanner.start();
@@ -2332,7 +2460,7 @@ export function SpatialProvider({
       scanner.stop();
       domScannerRef.current = null;
     };
-  }, []);
+  }, [domScannerPolicy]);
 
   useEffect(() => {
     if (!availableModalities.includes('voice')) {

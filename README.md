@@ -70,6 +70,66 @@ Use this when you want the SDK around the app UI without registering explicit to
 
 `SpatialProvider.modalities` controls which modalities are available, not which ones must stay on. Users can toggle any available modality from the SDK chat panel at runtime. When both gaze and gesture are available, gesture depends on gaze: turning gaze off also turns gesture off, while turning gesture back on will reactivate gaze.
 
+## Context And Trust Controls
+
+Exocor now lets you shape resolver payloads without turning discovery or tools off by default.
+
+- `contextPolicy` controls how much context Exocor sends and which sections are eligible.
+- `trustPolicy` controls which parts of the app are scanned, which parts are sent, and which higher-risk inference paths stay enabled.
+- Safe defaults stay close to current behavior: `mode: 'full'`, all sections on `auto`, and all trust features enabled.
+
+```tsx
+import { SpatialProvider } from 'exocor';
+
+export default function App() {
+  return (
+    <SpatialProvider
+      contextPolicy={{
+        mode: 'balanced',
+        maxContextTokens: 1800,
+        sections: {
+          appMap: 'always',
+          liveDom: 'auto',
+          dialogs: 'auto',
+          forms: 'auto',
+          tablesAndLists: 'never',
+          tools: 'always'
+        }
+      }}
+      trustPolicy={{
+        features: {
+          remoteResolver: true,
+          appMapDiscovery: true,
+          liveDomScanning: true,
+          reactHints: true,
+          routerHints: true,
+          tools: true
+        },
+        neverScan: ['[data-exocor-private]'],
+        neverSend: ['[data-pii]'],
+        redact: [
+          {
+            selector: 'input[name="ssn"]',
+            fields: ['label', 'value', 'placeholder']
+          }
+        ]
+      }}
+    >
+      <YourApp />
+    </SpatialProvider>
+  );
+}
+```
+
+- `mode: 'full'` preserves the current broadest planning shape.
+- `mode: 'balanced'` keeps the same core signals but trims lower-value detail first.
+- `mode: 'lean'` pushes harder on payload size while still preserving route, tool, dialog, and active form context when relevant.
+- `maxContextTokens` is a soft budget. Exocor shrinks sections in priority order before it drops them.
+- `neverScan` keeps matching subtrees out of live DOM scans and app-map discovery.
+- `neverSend` allows local execution to keep using a subtree while stripping it from remote resolver payloads.
+- `redact` masks specific fields before resolver requests are sent.
+- `features.remoteResolver`, `appMapDiscovery`, `liveDomScanning`, `reactHints`, `routerHints`, and `tools` let you disable specific paths without removing the rest of the product.
+
 ## Tool-Enabled Integration
 
 If your handlers depend on router helpers, app state, or domain actions, keep your own providers above `SpatialProvider` and pass tools into the provider that wraps the routed UI.
@@ -132,9 +192,11 @@ At runtime Exocor:
 1. mounts its SDK UI in a shadow root so host CSS does not leak into it
 2. scans the wrapped UI and builds runtime context plus a reusable app map
 3. registers any explicit tools passed to `SpatialProvider`
-4. sends planning requests to a resolver route you run locally or on your backend
+4. shapes and sends planning requests to a resolver route you run locally or on your backend
 5. executes explicit tools, app-map-aware steps, or DOM steps depending on what best fits the command
 6. can stop an active run cooperatively from the SDK chat UI without rolling back host actions that already completed
+
+When `debug` is enabled, Exocor logs a lightweight resolver context report with estimated token usage, included sections, and anything dropped or redacted. Raw resolver context is not logged by default.
 
 ## Local Development
 
@@ -172,7 +234,7 @@ Main package exports:
 - `useGesture()`
 - `useIntent()`
 - `useDOMMap()`
-- provider, intent, app-map, modality, and tool types from `src/types`
+- provider, intent, app-map, modality, tool, context-policy, and trust-policy types from `src/types`
 
 Server exports:
 

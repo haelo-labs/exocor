@@ -384,8 +384,8 @@ describe('IntentResolver classification and context shaping', () => {
     vi.restoreAllMocks();
   });
 
-  it('classifies in isolation with required debug log reason', () => {
-    const resolver = new IntentResolver();
+  it('classifies in isolation and emits debug reason logs only when debug is enabled', () => {
+    const resolver = new IntentResolver({ debug: true });
     const appMapSummary = buildAppMapSummary();
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
@@ -450,11 +450,11 @@ describe('IntentResolver classification and context shaping', () => {
     expect(firstPrompt).toContain('Resolution priority: app_map_only');
     expect(firstPrompt).toContain('"elements":[]');
     expect(firstPrompt).not.toContain('"id":"e1"');
-    expect(firstPrompt).toContain('"locators"');
-    expect(firstPrompt).toContain('"selectorCandidates"');
-    expect(firstPrompt).toContain('"labelKey":"entertickettitle"');
-    expect(firstPrompt).toContain('"options":["low","medium","high","critical"]');
-    expect(firstPrompt).toContain('"componentName":"SettingsRoute"');
+    expect(firstPrompt).toContain('"modalTriggers"');
+    expect(firstPrompt).not.toContain('"locators"');
+    expect(firstPrompt).not.toContain('"selectorCandidates"');
+    expect(firstPrompt).not.toContain('"labelKey"');
+    expect(firstPrompt).not.toContain('"options":["low","medium","high","critical"]');
     expect(firstPrompt).toContain('"runtimeState"');
     expect(firstPrompt).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
     expect(firstPrompt).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
@@ -488,9 +488,9 @@ describe('IntentResolver classification and context shaping', () => {
     expect(secondPrompt).toContain('Resolution priority: route_then_dom');
     expect(secondPrompt).toContain('"elements":[]');
     expect(secondPrompt).not.toContain('"id":"e1"');
-    expect(secondPrompt).toContain('"locators"');
-    expect(secondPrompt).toContain('"labelKey":"lowmediumhighcritical"');
-    expect(secondPrompt).toContain('"componentName":"SettingsRoute"');
+    expect(secondPrompt).toContain('"modalTriggers"');
+    expect(secondPrompt).not.toContain('"locators"');
+    expect(secondPrompt).not.toContain('"labelKey"');
     expect(secondPrompt).toContain('"runtimeState"');
     expect(secondPrompt).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
     expect(secondPrompt).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
@@ -528,15 +528,16 @@ describe('IntentResolver classification and context shaping', () => {
     const firstPrompt = firstCall.messages[0]?.content || '';
     expect(firstPrompt).toContain('Resolution priority: dom_only');
     expect(firstPrompt).toContain('"id":"e1"');
-    expect(firstPrompt).toContain('"locators"');
-    expect(firstPrompt).toContain('"options":["low","medium","high","critical"]');
+    expect(firstPrompt).toContain('"modalTriggers"');
+    expect(firstPrompt).not.toContain('"locators"');
+    expect(firstPrompt).not.toContain('"options":["low","medium","high","critical"]');
     expect(firstPrompt).toContain('"runtimeState"');
     expect(firstPrompt).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
     expect(firstPrompt).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
     expect(firstPrompt).toContain('"buttonsState":[{"label":"Create Ticket","disabled":false,"loading":false}]');
   });
 
-  it('includes full app map payload in resolve, failed-step, new-elements, and follow-up prompt paths', async () => {
+  it('uses summarized app map payloads in resolve, failed-step, new-elements, and follow-up prompt paths', async () => {
     const resolver = new IntentResolver({ apiKey: 'test-key' });
     const map = buildMapWithRuntime([buildDescriptor()]);
     const appMap = buildAppMap();
@@ -618,11 +619,11 @@ describe('IntentResolver classification and context shaping', () => {
     });
 
     for (const payload of promptPayloads) {
-      expect(payload).toContain('"locators"');
-      expect(payload).toContain('"selectorCandidates"');
-      expect(payload).toContain('"labelKey":"entertickettitle"');
-      expect(payload).toContain('"options":["low","medium","high","critical"]');
-      expect(payload).toContain('"componentName":"SettingsRoute"');
+      expect(payload).toContain('"modalTriggers"');
+      expect(payload).not.toContain('"locators"');
+      expect(payload).not.toContain('"selectorCandidates"');
+      expect(payload).not.toContain('"labelKey"');
+      expect(payload).not.toContain('"options":["low","medium","high","critical"]');
       expect(payload).toContain('"runtimeState"');
       expect(payload).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
       expect(payload).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
