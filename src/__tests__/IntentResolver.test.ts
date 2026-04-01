@@ -447,18 +447,18 @@ describe('IntentResolver classification and context shaping', () => {
       messages: Array<{ content: string }>;
     };
     const firstPrompt = firstCall.messages[0]?.content || '';
-    expect(firstPrompt).toContain('Resolution priority: app_map_only');
-    expect(firstPrompt).toContain('"elements":[]');
+    expect(firstPrompt).toContain('Priority: app_map_only');
     expect(firstPrompt).not.toContain('"id":"e1"');
-    expect(firstPrompt).toContain('"modalTriggers"');
+    expect(firstPrompt).not.toContain('"elements":[{"id":"e1"');
+    expect(firstPrompt).toContain('"app":[{"path":"/tickets"');
+    expect(firstPrompt).toContain('"modals"');
     expect(firstPrompt).not.toContain('"locators"');
     expect(firstPrompt).not.toContain('"selectorCandidates"');
     expect(firstPrompt).not.toContain('"labelKey"');
     expect(firstPrompt).not.toContain('"options":["low","medium","high","critical"]');
-    expect(firstPrompt).toContain('"runtimeState"');
-    expect(firstPrompt).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
-    expect(firstPrompt).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
-    expect(firstPrompt).toContain('"buttonsState":[{"label":"Create Ticket","disabled":false,"loading":false}]');
+    expect(firstPrompt).toContain('"state":{"dialogs":["New Ticket"]');
+    expect(firstPrompt).toContain('"fields":[{"label":"title","name":"title","type":"text","value":"Pump Failure"}]');
+    expect(firstPrompt).toContain('"buttons":[{"label":"Create Ticket"}]');
 
     mockStreamedTextResponse(
       '[{"action":"navigate","target":"/tickets","value":null,"waitForDOM":true,"reason":"navigate to tickets"}]'
@@ -485,16 +485,15 @@ describe('IntentResolver classification and context shaping', () => {
       messages: Array<{ content: string }>;
     };
     const secondPrompt = secondCall.messages[0]?.content || '';
-    expect(secondPrompt).toContain('Resolution priority: route_then_dom');
-    expect(secondPrompt).toContain('"elements":[]');
+    expect(secondPrompt).toContain('Priority: route_then_dom');
     expect(secondPrompt).not.toContain('"id":"e1"');
-    expect(secondPrompt).toContain('"modalTriggers"');
+    expect(secondPrompt).not.toContain('"elements":[{"id":"e1"');
+    expect(secondPrompt).toContain('"app":[{"path":"/tickets"');
     expect(secondPrompt).not.toContain('"locators"');
     expect(secondPrompt).not.toContain('"labelKey"');
-    expect(secondPrompt).toContain('"runtimeState"');
-    expect(secondPrompt).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
-    expect(secondPrompt).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
-    expect(secondPrompt).toContain('"buttonsState":[{"label":"Create Ticket","disabled":false,"loading":false}]');
+    expect(secondPrompt).toContain('"state":{"dialogs":["New Ticket"]');
+    expect(secondPrompt).toContain('"fields":[{"label":"title","name":"title","type":"text","value":"Pump Failure"}]');
+    expect(secondPrompt).toContain('"buttons":[{"label":"Create Ticket"}]');
   });
 
   it('includes live DOM elements in dom_only context', async () => {
@@ -526,15 +525,14 @@ describe('IntentResolver classification and context shaping', () => {
       messages: Array<{ content: string }>;
     };
     const firstPrompt = firstCall.messages[0]?.content || '';
-    expect(firstPrompt).toContain('Resolution priority: dom_only');
+    expect(firstPrompt).toContain('Priority: dom_only');
     expect(firstPrompt).toContain('"id":"e1"');
-    expect(firstPrompt).toContain('"modalTriggers"');
+    expect(firstPrompt).toContain('"app":[{"path":"/tickets"');
     expect(firstPrompt).not.toContain('"locators"');
     expect(firstPrompt).not.toContain('"options":["low","medium","high","critical"]');
-    expect(firstPrompt).toContain('"runtimeState"');
-    expect(firstPrompt).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
-    expect(firstPrompt).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
-    expect(firstPrompt).toContain('"buttonsState":[{"label":"Create Ticket","disabled":false,"loading":false}]');
+    expect(firstPrompt).toContain('"state":{"dialogs":["New Ticket"]');
+    expect(firstPrompt).toContain('"fields":[{"label":"title","name":"title","type":"text","value":"Pump Failure"}]');
+    expect(firstPrompt).toContain('"buttons":[{"label":"Create Ticket"}]');
   });
 
   it('uses summarized app map payloads in resolve, failed-step, new-elements, and follow-up prompt paths', async () => {
@@ -619,15 +617,15 @@ describe('IntentResolver classification and context shaping', () => {
     });
 
     for (const payload of promptPayloads) {
-      expect(payload).toContain('"modalTriggers"');
+      expect(payload).toContain('"app":[{"path":"/tickets"');
+      expect(payload).toContain('"modals"');
       expect(payload).not.toContain('"locators"');
       expect(payload).not.toContain('"selectorCandidates"');
       expect(payload).not.toContain('"labelKey"');
       expect(payload).not.toContain('"options":["low","medium","high","critical"]');
-      expect(payload).toContain('"runtimeState"');
-      expect(payload).toContain('"dialogs":[{"label":"New Ticket","isOpen":true}]');
-      expect(payload).toContain('"formState":[{"label":"title","name":"title","type":"text","value":"Pump Failure","disabled":false}]');
-      expect(payload).toContain('"buttonsState":[{"label":"Create Ticket","disabled":false,"loading":false}]');
+      expect(payload).toContain('"state":{"dialogs":["New Ticket"]');
+      expect(payload).toContain('"fields":[{"label":"title","name":"title","type":"text","value":"Pump Failure"}]');
+      expect(payload).toContain('"buttons":[{"label":"Create Ticket"}]');
     }
   });
 
@@ -669,15 +667,13 @@ describe('IntentResolver classification and context shaping', () => {
       ?.content || '');
 
     for (const prompt of [streamedPrompt, resolvePrompt]) {
-      expect(prompt).toContain('"toolCapabilityMap"');
-      expect(prompt).toContain('"preferredToolIds":["createTicket"]');
+      expect(prompt).toContain('"tools":[{');
       expect(prompt).toContain('"id":"refreshDashboard"');
       expect(prompt).toContain('"id":"createTicket"');
-      expect(prompt).toContain('"isGlobal":true');
-      expect(prompt).toContain('"requiresNavigation":true');
-      expect(prompt).toContain('"currentRouteMatches":false');
-      expect(prompt).toContain('"preferredForCommand":true');
-      expect(prompt).toContain('"semanticScore":6.4');
+      expect(prompt).toContain('"global":true');
+      expect(prompt).toContain('"needsNav":true');
+      expect(prompt).toContain('"preferred":true');
+      expect(prompt).not.toContain('"preferredReason"');
     }
   });
 
@@ -713,12 +709,8 @@ describe('IntentResolver classification and context shaping', () => {
     const resolveWithContextSystemPrompt = (createMessageSpy.mock.calls[0]?.[0] as { system?: string }).system || '';
     const resolveSystemPrompt = (createMessageSpy.mock.calls[1]?.[0] as { system?: string }).system || '';
 
-    expect(resolveWithContextSystemPrompt).toContain(
-      'If runtimeState shows an open modal/dialog and user asks to fill/edit/select/submit, operate in that open modal/dialog in place'
-    );
-    expect(resolveSystemPrompt).toContain(
-      'If runtime state shows an open modal/dialog and the command is about fill/edit/select/submit, operate in that open modal/dialog in place.'
-    );
+    expect(resolveWithContextSystemPrompt).toContain('Use open dialogs/forms already in state before reopening flows.');
+    expect(resolveSystemPrompt).toContain('Use open dialogs/forms already in state before reopening flows.');
   });
 
   it('documents global tools, route-specific tools, and navigate-then-tool behavior in system prompts', async () => {
@@ -756,31 +748,12 @@ describe('IntentResolver classification and context shaping', () => {
     const streamedSystemPrompt = (createMessageSpy.mock.calls[0]?.[0] as { system?: string })?.system || '';
     const resolveSystemPrompt = (createMessageSpy.mock.calls[1]?.[0] as { system?: string })?.system || '';
 
-    expect(streamedSystemPrompt).toContain(
-      'toolCapabilityMap: explicit app-native tools, including global tools, route-specific tools, and preferred tools for this command'
-    );
-    expect(streamedSystemPrompt).toContain(
-      'If one preferred tool fully covers the task, use it instead of reconstructing the same task with DOM/app-map steps'
-    );
-    expect(streamedSystemPrompt).toContain('Global tools can be used from any route');
-    expect(streamedSystemPrompt).toContain(
-      'Route-specific tools remain available even when the current route is different'
-    );
-    expect(streamedSystemPrompt).toContain('plan navigate first and then the tool');
-    expect(streamedSystemPrompt).toContain('Example off-route preferred tool');
-    expect(streamedSystemPrompt).toContain('"toolId":"createRecord"');
-    expect(streamedSystemPrompt).toContain('"target":"/records"');
-    expect(streamedSystemPrompt).toContain('navigate "/records" → click "New Record" → fill "Title" → click "Create"');
-    expect(streamedSystemPrompt).toContain('Never invent tool ids');
-    expect(resolveSystemPrompt).toContain(
-      'If a preferred tool fully covers the task, use it instead of reconstructing the same workflow with DOM/app-map steps'
-    );
-    expect(resolveSystemPrompt).toContain(
-      'Only when no preferred tool applies, CREATE or EDIT workflows should be completed with the full DOM or app-map path'
-    );
-    expect(resolveSystemPrompt).toContain(
-      'Destructive tools should only be used for explicit destructive intent'
-    );
+    expect(streamedSystemPrompt).toContain('Prefer preferred tools when they fully cover the task.');
+    expect(streamedSystemPrompt).toContain('Global tools work anywhere.');
+    expect(streamedSystemPrompt).toContain('Off-route route tools may require navigate then tool.');
+    expect(streamedSystemPrompt).toContain('Never invent tool ids, routes, or parameter names.');
+    expect(resolveSystemPrompt).toContain('Prefer preferred tools when they fully cover the task.');
+    expect(resolveSystemPrompt).toContain('Off-route route tools may require navigate then tool.');
   });
 
   it('resolves a selected preferred tool into validated args instead of returning workflow steps', async () => {
@@ -821,14 +794,9 @@ describe('IntentResolver classification and context shaping', () => {
       system?: string;
       messages?: Array<{ role: string; content: string }>;
     };
-    expect(request.system).toContain(
-      'The host application has already selected one strong preferred tool as the authoritative execution path'
-    );
-    expect(request.system).toContain('Never return DOM plans');
-    expect(request.system).toContain('Only use declared parameter names from the selected tool schema');
-    expect(request.system).toContain(
-      'If the tool is route-specific and the current route does not match, ignore navigation'
-    );
+    expect(request.system).toContain('Do not return steps or DOM plans.');
+    expect(request.system).toContain('Use only declared parameter names.');
+    expect(request.system).toContain('If any required arg is missing, clarify.');
     expect(request.messages?.[0]?.content || '').toContain('"id":"createTicket"');
   });
 
@@ -943,12 +911,11 @@ describe('IntentResolver classification and context shaping', () => {
       system?: string;
       messages?: Array<{ content?: string }>;
     };
-    expect(request.system || '').toContain('PREFERRED TOOL CORRECTION:');
-    expect(request.system || '').toContain('you MUST use it instead of reconstructing the same workflow with DOM/app-map steps');
-    expect(request.system || '').toContain('you MUST plan navigate first and then the tool');
+    expect(request.system || '').toContain('Correction: the previous plan ignored preferred tool "createTicket".');
+    expect(request.system || '').toContain('use it instead of reconstructing the same workflow');
     expect(request.messages?.[0]?.content || '').toContain('Preferred tool: createTicket');
-    expect(request.messages?.[0]?.content || '').toContain('Preferred tool reasoning: strong semantic match for ticket creation');
-    expect(request.messages?.[0]?.content || '').toContain('Previous plan to replace:');
+    expect(request.messages?.[0]?.content || '').toContain('Why: strong semantic match for ticket creation');
+    expect(request.messages?.[0]?.content || '').toContain('Previous plan:');
   });
 
   it('instructs the streamed resolver to use voice gaze context only when semantically relevant', async () => {
@@ -981,14 +948,13 @@ describe('IntentResolver classification and context shaping', () => {
 
     const systemPrompt = (createMessageSpy.mock.calls.at(-1)?.[0] as { system?: string })?.system || '';
 
-    expect(systemPrompt).toContain(
-      'Gaze context (gazeTarget) is provided for voice commands and indicates where the user was looking when they started speaking'
-    );
-    expect(systemPrompt).toContain(
-      'Use gaze context only when it is semantically relevant to the command'
-    );
-    expect(systemPrompt).toContain("'create a new record', 'navigate to reports', 'filter by critical priority'");
-    expect(systemPrompt).toContain('ignore gazeTarget and resolve from the command alone');
+    const userPrompt = ((createMessageSpy.mock.calls.at(-1)?.[0] as { messages?: Array<{ content?: string }> })?.messages?.[0]
+      ?.content || '');
+
+    expect(systemPrompt).toContain('Use gaze only for referential commands like this/that/here.');
+    expect(userPrompt).toContain('"method":"voice"');
+    expect(userPrompt).toContain('"gaze":"e1"');
+    expect(userPrompt).toContain('"runtime":{"method":"voice","gaze":{"id":"e1"');
   });
 
   it('streams complete steps before message stop and reconciles without duplicates', async () => {

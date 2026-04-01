@@ -27,22 +27,12 @@ Use this when you just want the SDK around the app UI.
 
 `SpatialProvider.modalities` controls which modalities are available. Users can toggle available voice, gaze, and gesture from the SDK chat panel at runtime, and those choices persist per app scope. When both gaze and gesture are exposed, gesture depends on gaze, so turning gaze off also turns gesture off.
 
-## Context And Trust Controls
+## Trust Controls
 
-Use `contextPolicy` when you want smaller or more predictable resolver payloads, and use `trustPolicy` when you need stricter control over scanning, sending, or feature paths.
+Exocor already keeps resolver requests compact by default. Use `trustPolicy` when you need stricter control over scanning, sending, redaction, or specific feature paths.
 
 ```tsx
 <SpatialProvider
-  contextPolicy={{
-    mode: 'balanced',
-    maxContextTokens: 1800,
-    sections: {
-      appMap: 'always',
-      forms: 'auto',
-      tablesAndLists: 'never',
-      tools: 'always'
-    }
-  }}
   trustPolicy={{
     neverScan: ['[data-exocor-private]'],
     neverSend: ['[data-pii]'],
@@ -58,9 +48,7 @@ Use `contextPolicy` when you want smaller or more predictable resolver payloads,
 </SpatialProvider>
 ```
 
-- `mode: 'full'` is the default and stays closest to current behavior.
-- `mode: 'balanced'` trims lower-value detail first while keeping route, tool, dialog, and active form context when relevant.
-- `mode: 'lean'` pushes further on payload size without turning Exocor into a manual system.
+- Exocor internally budgets and compacts route, tool, runtime, app-map, and live DOM context before each resolver call.
 - `neverScan` excludes matching subtrees from live DOM scans and app-map discovery.
 - `neverSend` strips matching subtrees from remote resolver payloads while still allowing local execution paths to use them.
 - `redact` masks specific labels, values, placeholders, and names before requests are sent.

@@ -2,10 +2,6 @@ import type { ReactNode } from 'react';
 
 /** Supported input modalities. */
 export type Modality = 'voice' | 'gaze' | 'gesture';
-/** Developer-facing context shaping mode for resolver payloads. */
-export type ExocorContextMode = 'full' | 'balanced' | 'lean';
-/** Section inclusion mode for resolver payload shaping. */
-export type ExocorSectionMode = 'auto' | 'always' | 'never';
 /** Redactable string fields across live DOM and app-map derived payloads. */
 export type ExocorRedactionField = 'label' | 'text' | 'value' | 'placeholder' | 'ariaLabel' | 'name';
 
@@ -53,22 +49,6 @@ export interface AppTool {
   name: string;
   description: string;
   execute: (...args: unknown[]) => unknown | Promise<unknown>;
-}
-
-/** Resolver payload budget and section-shaping controls. */
-export interface ExocorContextPolicy {
-  mode?: ExocorContextMode;
-  maxContextTokens?: number;
-  sections?: {
-    appMap?: ExocorSectionMode;
-    liveDom?: ExocorSectionMode;
-    dialogs?: ExocorSectionMode;
-    forms?: ExocorSectionMode;
-    tablesAndLists?: ExocorSectionMode;
-    gaze?: ExocorSectionMode;
-    selectedText?: ExocorSectionMode;
-    tools?: ExocorSectionMode;
-  };
 }
 
 /** One selector-based redaction rule applied before resolver payloads are sent. */
@@ -396,7 +376,6 @@ export interface SpatialProviderProps {
   modalities?: Modality[];
   debug?: boolean;
   tools?: ExocorToolDefinition[];
-  contextPolicy?: ExocorContextPolicy;
   trustPolicy?: ExocorTrustPolicy;
   /** Called when a fresh app map is discovered or loaded from cache. */
   onAppMapped?: (appMap: AppMap) => void;

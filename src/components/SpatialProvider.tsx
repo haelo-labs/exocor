@@ -25,7 +25,7 @@ import { DeterministicIntentResolver } from '../core/DeterministicIntentResolver
 import { RemoteIntentResolver } from '../core/RemoteIntentResolver';
 import { shapeResolverContext, shapeResolverNewElementsForTransport } from '../core/ResolverContextShaper';
 import { createToolRegistry, normalizeToolRoutePath } from '../core/ToolRegistry';
-import { resolveContextPolicy, resolveTrustPolicy } from '../core/contextPolicy';
+import { resolveTrustPolicy } from '../core/contextPolicy';
 import {
   ChatPanel,
   type CommandHistoryItem,
@@ -52,6 +52,7 @@ import type {
   GazeState,
   GestureState,
   IntentAction,
+  IntentResolutionInput,
   IntentState,
   IntentStep,
   IntentPlan,
@@ -938,7 +939,6 @@ export function SpatialProvider({
   modalities = DEFAULT_MODALITIES,
   debug = Boolean(false),
   tools,
-  contextPolicy,
   trustPolicy,
   onAppMapped
 }: SpatialProviderProps): JSX.Element {
@@ -948,7 +948,6 @@ export function SpatialProvider({
     () => DEFAULT_MODALITIES.filter((modality) => modalities.includes(modality)),
     [modalities]
   );
-  const resolvedContextPolicy = useMemo(() => resolveContextPolicy(contextPolicy), [contextPolicy]);
   const resolvedTrustPolicy = useMemo(() => resolveTrustPolicy(trustPolicy), [trustPolicy]);
   const domScannerPolicy = useMemo<DOMScannerPolicy>(
     () => ({
@@ -1639,12 +1638,16 @@ export function SpatialProvider({
   }, [clearSilenceTimer, resetVoiceGazeSnapshot]);
 
   const shapeRemoteResolverPayload = useCallback(
-    (input: Parameters<typeof shapeResolverContext>[0]['input'], runtimeContext?: Record<string, unknown>) => {
+    (
+      input: Parameters<typeof shapeResolverContext>[0]['input'],
+      runtimeContext?: Record<string, unknown>,
+      requestKind?: Parameters<typeof shapeResolverContext>[0]['requestKind']
+    ) => {
       const shaped = shapeResolverContext({
         input,
         runtimeContext,
-        contextPolicy: resolvedContextPolicy,
-        trustPolicy: resolvedTrustPolicy
+        trustPolicy: resolvedTrustPolicy,
+        requestKind
       });
 
       if (debug) {
@@ -1654,7 +1657,7 @@ export function SpatialProvider({
 
       return shaped;
     },
-    [debug, resolvedContextPolicy, resolvedTrustPolicy]
+    [debug, resolvedTrustPolicy]
   );
 
   const executeCommand = useCallback(
@@ -1753,8 +1756,9 @@ export function SpatialProvider({
         map: DOMCapabilityMap,
         commandText: string,
         completedSteps?: IntentStep[],
-        runtimeContext?: Record<string, unknown>
-      ) => shapeRemoteResolverPayload(buildResolutionInput(map, commandText, completedSteps), runtimeContext);
+        runtimeContext?: Record<string, unknown>,
+        requestKind?: Parameters<typeof shapeResolverContext>[0]['requestKind']
+      ) => shapeRemoteResolverPayload(buildResolutionInput(map, commandText, completedSteps), runtimeContext, requestKind);
 
       const toolShortcutMatch =
         activePendingClarification || !toolRegistry.hasTools()
@@ -1916,7 +1920,8 @@ export function SpatialProvider({
               resolutionMap,
               resolutionCommand,
               undefined,
-              enrichedContext
+              enrichedContext,
+              'preferred_tool_intent'
             );
             const preferredToolIntent = await resolverRef.current.resolvePreferredToolIntent(
               shapedPreferredToolPayload.input,
@@ -2031,7 +2036,8 @@ export function SpatialProvider({
             resolutionMap,
             resolutionCommandForContext,
             undefined,
-            enrichedContext
+            enrichedContext,
+            'plan'
           );
           let resolvedIntent;
           try {
@@ -2100,7 +2106,8 @@ export function SpatialProvider({
             fallbackMap,
             resolutionCommand,
             undefined,
-            enrichedContext
+            enrichedContext,
+            'resolve'
           );
           resolutionPriority = 'dom_only';
           resolvedPlan = await resolverRef.current!.resolve(fallbackResolutionInput.input, signal);
@@ -2258,7 +2265,8 @@ export function SpatialProvider({
             retryMap,
             resolutionCommand,
             undefined,
-            enrichedContext
+            enrichedContext,
+            'failed_step'
           );
 
           const retrySteps = await resolverRef.current.resolveForFailedStep(
@@ -2309,13 +2317,13 @@ export function SpatialProvider({
             followUpMap,
             resolutionCommand,
             completedStepsHistory,
-            enrichedContext
+            enrichedContext,
+            'new_elements'
           );
           const shapedNewElements = shapeResolverNewElementsForTransport({
             command: resolutionCommand,
             elements: result.newElementsAfterWait || [],
             gazeTarget: commandGazeState.gazeTarget ?? null,
-            contextPolicy: resolvedContextPolicy,
             trustPolicy: resolvedTrustPolicy
           });
 
@@ -2414,7 +2422,6 @@ export function SpatialProvider({
       domScannerPolicy,
       dismissToast,
       pendingClarification,
-      resolvedContextPolicy,
       resolvedTrustPolicy,
       runAppMapDiscovery,
       setAndNotifyAppMap,

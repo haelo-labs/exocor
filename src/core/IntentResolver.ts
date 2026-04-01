@@ -1,6 +1,23 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildCompressedCapabilityMap } from './CapabilityMap';
 import { summarizeAppMapForResolver } from './DOMScanner';
+import {
+  buildFollowUpUserPrompt,
+  buildNewElementsUserPrompt,
+  buildPlannerSystemPrompt,
+  buildPlannerUserPrompt,
+  buildPreferredToolIntentSystemPrompt,
+  buildPreferredToolIntentUserPrompt,
+  buildPreferredToolRetrySystemPrompt,
+  buildPreferredToolRetryUserPrompt,
+  buildPromptContext as buildResolverPromptContext,
+  buildResolveUserPrompt,
+  buildRuntimeStateSnapshot as createResolverRuntimeStateSnapshot,
+  buildTypedClarificationSystemPrompt,
+  buildTypedClarificationUserPrompt,
+  type PlannerPromptPriority,
+  type ResolverRuntimeStateSnapshot
+} from './resolverPrompts';
 import type { ExocorPreferredToolIntentResult } from './resolverProtocol';
 import type {
   AppMapSummary,
@@ -43,42 +60,6 @@ interface StreamResolveCallbacks {
   onResolutionPriority?: (priority: ResolutionPriority) => void;
   onStep?: (step: IntentStep) => void;
 }
-
-const CLAUDE_SYSTEM_PROMPT = `You are an intent resolver. Given app context and user intent return a JSON array of steps to complete the task fully. Be concise.
-App context: {compressed capability map with element IDs}
-Runtime state: {current route/url, open dialogs, visible form fields, visible buttons}
-Explicit tools: {registered global and route-specific app-native tools, including preferred tools for this command when available}
-User intent: {voice or typed command}
-Current page: {route}
-Gaze target: {element ID user is looking at or null}
-Return only valid JSON array:
-[
-{action: click|fill|navigate|wait|scroll|tool, target: elementId or route, toolId: string, args: object, value: string or null, waitForDOM: boolean, reason: string}
-]
-Rules:
-
-Use element IDs from context for targets
-If toolCapabilityMap.preferredToolIds is non-empty, treat those preferred tools as the first semantic path for this command
-If a preferred tool fully covers the task, use it instead of reconstructing the same workflow with DOM/app-map steps
-Prefer a registered tool when the tool is clearly a better fit than DOM/app-map inference
-Never invent tool ids
-Only use declared tool parameter names
-Global tools can be used from any route
-Route-specific tools remain available even when current route differs; if a preferred route-specific tool has currentRouteMatches=false and requiresNavigation=true, plan navigate first and then the tool
-Destructive tools should only be used for explicit destructive intent
-If no tool fits, continue with app-map and DOM planning
-Elements marked as fillable: input, textarea, select, contenteditable. Only use fill action on elements explicitly marked as fillable:true in the context. Never use fill action on buttons, divs without contenteditable, or links.
-Complete full workflow end to end
-Always complete the FULL workflow end to end. Never stop at an intermediate state like an open modal or dialog.
-Only when no preferred tool applies, CREATE or EDIT workflows should be completed with the full DOM or app-map path: find the create button, click it, wait for form, fill required fields, and submit.
-Example on-route preferred tool: [{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
-Example off-route preferred tool: [{"action":"navigate","target":"/records","value":null,"waitForDOM":true,"reason":"navigate to records first"},{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
-waitForDOM true after clicks that open modals or change page
-Add wait 300ms between DOM-changing actions
-Do not add navigation for confirmation after submit/create unless the user explicitly requested navigation
-If runtime state shows an open modal/dialog and the command is about fill/edit/select/submit, operate in that open modal/dialog in place.
-Do not navigate away or reopen create flow unless the user explicitly asked to navigate/start a new flow.
-Return empty array if intent is unclear`;
 
 function normalize(command: string): string {
   return command.trim().replace(/\s+/g, ' ');
@@ -464,73 +445,11 @@ function parseSteps(text: string): IntentStep[] {
   return steps;
 }
 
-function toClaudeContext(map: CompressedCapabilityMap): Omit<CompressedCapabilityMap, 'selectorMap'> {
-  const { selectorMap: _selectorMap, ...withoutSelectors } = map;
-  return withoutSelectors;
-}
-
 interface ResolutionPriorityDecision {
   priority: ResolutionPriority;
   reason: string;
   dynamicSignal?: string;
   routeAnchor?: string;
-}
-
-interface RuntimeStateSnapshot {
-  currentRoute: string;
-  currentUrl: string;
-  dialogs: Array<{ label: string; isOpen: boolean }>;
-  formState: Array<{ label: string; name: string; type: string; value: string; disabled: boolean }>;
-  buttonsState: Array<{ label: string; disabled: boolean; loading: boolean }>;
-}
-
-type ResolverPromptContext = Omit<CompressedCapabilityMap, 'selectorMap'> & {
-  runtimeState: RuntimeStateSnapshot;
-  toolCapabilityMap?: IntentResolutionInput['toolCapabilityMap'];
-};
-
-function buildPreferredToolPromptValue(
-  toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
-): string {
-  if (!toolCapabilityMap?.preferredToolIds?.length) {
-    return 'none';
-  }
-
-  return JSON.stringify(
-    toolCapabilityMap.tools
-      .filter((tool) => toolCapabilityMap.preferredToolIds.includes(tool.id))
-      .map((tool) => ({
-        id: tool.id,
-        semanticScore: tool.semanticScore,
-        currentRouteMatches: tool.currentRouteMatches,
-        requiresNavigation: tool.requiresNavigation,
-        preferredReason: tool.preferredReason || ''
-      }))
-  );
-}
-
-function toNewElementContext(elements: DOMElementDescriptor[]): Array<{
-  id: string;
-  componentName: string;
-  tag: string;
-  fillable: boolean;
-  label: string;
-  text: string;
-  type: string;
-  placeholder: string;
-  handlers: string[];
-}> {
-  return elements.slice(0, 40).map((element) => ({
-    id: element.id,
-    componentName: element.componentName || 'anonymous',
-    tag: element.tagName,
-    fillable: Boolean(element.fillable),
-    label: element.label || '',
-    text: element.text || '',
-    type: element.type || '',
-    placeholder: element.placeholder || '',
-    handlers: (element.handlers || []).slice(0, 6)
-  }));
 }
 
 /** Server-side Anthropic resolver used behind the Exocor backend route. */
@@ -580,17 +499,12 @@ export class IntentResolver {
     return Boolean(selectedText || focusedElementId);
   }
 
-  private hasAppMapContext(domContext: { appMap?: AppMapSummary | null }): boolean {
-    const appMap = domContext.appMap;
-    if (!appMap || !Array.isArray(appMap.routes)) {
-      return false;
-    }
-
-    return appMap.routes.length > 0;
+  private hasAppMapContext(domContext: Record<string, unknown>): boolean {
+    return Array.isArray(domContext.app) && domContext.app.length > 0;
   }
 
-  private hasToolCapabilityContext(domContext: { toolCapabilityMap?: IntentResolutionInput['toolCapabilityMap'] }): boolean {
-    return Boolean(domContext.toolCapabilityMap?.tools?.length);
+  private hasToolCapabilityContext(domContext: Record<string, unknown>): boolean {
+    return Array.isArray(domContext.tools) && domContext.tools.length > 0;
   }
 
   private toMatchTokens(value: string): string[] {
@@ -732,76 +646,49 @@ export class IntentResolver {
     return summarizeAppMapForResolver(appMap || null, currentRoute, tokenBudget, anchorRoute);
   }
 
-  private buildRuntimeStateSnapshot(
+  private createRuntimeStateSnapshot(
     map: IntentResolutionInput['map'],
     compressed: CompressedCapabilityMap
-  ): RuntimeStateSnapshot {
-    return {
-      currentRoute: compressed.currentRoute,
-      currentUrl: compressed.currentUrl,
-      dialogs: map.dialogs
-        .filter((dialog) => dialog.isOpen)
-        .slice(0, 12)
-        .map((dialog) => ({
-          label: dialog.label || '',
-          isOpen: Boolean(dialog.isOpen)
-        })),
-      formState: map.formState.slice(0, 40).map((field) => ({
-        label: field.label || '',
-        name: field.name || '',
-        type: field.type || '',
-        value: field.value || '',
-        disabled: Boolean(field.disabled)
-      })),
-      buttonsState: map.buttonsState.slice(0, 40).map((button) => ({
-        label: button.label || '',
-        disabled: Boolean(button.disabled),
-        loading: Boolean(button.loading)
-      }))
-    };
+  ): ResolverRuntimeStateSnapshot {
+    return createResolverRuntimeStateSnapshot(map, compressed);
   }
 
-  private buildResolverContext(
+  private createPromptContext(
     compressed: CompressedCapabilityMap,
     appMap: AppMapSummary | null | undefined,
-    runtimeState: RuntimeStateSnapshot,
-    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
-  ): ResolverPromptContext {
-    return {
-      ...toClaudeContext({
-        ...compressed,
-        appMap: appMap || null
-      }),
-      runtimeState,
-      toolCapabilityMap: toolCapabilityMap || null
-    };
-  }
-
-  private buildAppMapFirstContext(
-    compressed: CompressedCapabilityMap,
-    appMap: AppMapSummary | null | undefined,
-    runtimeState: RuntimeStateSnapshot,
-    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap']
-  ): ResolverPromptContext {
-    const context: ResolverPromptContext = {
-      pageSummary: '',
-      currentRoute: compressed.currentRoute,
-      currentUrl: compressed.currentUrl,
-      routes: compressed.routes,
-      gazeTargetId: compressed.gazeTargetId,
-      elements: [],
-      tableSummary: '',
-      listSummary: '',
-      appMap: appMap || null,
+    runtimeState: ResolverRuntimeStateSnapshot,
+    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap'],
+    runtimeContext?: Record<string, unknown>
+  ): Record<string, unknown> {
+    return buildResolverPromptContext({
+      compressed,
+      appMap,
       runtimeState,
       toolCapabilityMap: toolCapabilityMap || null,
-      tokenEstimate: 0
-    };
+      runtimeContext
+    });
+  }
 
-    return {
-      ...context,
-      tokenEstimate: Math.ceil(JSON.stringify(context).length / 4)
-    };
+  private createAppMapFirstPromptContext(
+    compressed: CompressedCapabilityMap,
+    appMap: AppMapSummary | null | undefined,
+    runtimeState: ResolverRuntimeStateSnapshot,
+    toolCapabilityMap: IntentResolutionInput['toolCapabilityMap'],
+    runtimeContext?: Record<string, unknown>
+  ): Record<string, unknown> {
+    return this.createPromptContext(
+      {
+        ...compressed,
+        elements: [],
+        tableSummary: '',
+        listSummary: '',
+        tokenEstimate: 0
+      },
+      appMap,
+      runtimeState,
+      toolCapabilityMap,
+      runtimeContext
+    );
   }
 
   private shouldSkipTypedClarificationGate(command: string): boolean {
@@ -823,40 +710,28 @@ export class IntentResolver {
   private async maybeAskForTypedClarification(
     command: string,
     runtimeContext: Record<string, unknown> | undefined,
-    domContext: ResolverPromptContext
+    domContext: Record<string, unknown>
   ): Promise<string | null> {
     if (!this.client) {
       return null;
     }
-
-    const decisionPrompt = `You are a clarification gate. Default is always needsClarification=false.
-Return JSON only: {"needsClarification": boolean, "question": string}
-
-Only set needsClarification=true when ALL of these are true:
-1. A required field has no possible value to infer from the command or context
-2. There is no reasonable default
-3. Acting without it would cause the action to fail
-
-Never ask about: optional fields, assignees, descriptions, tags, dates, categories.
-Never ask when the command is a navigation or filter intent.
-Never ask when gaze context identifies the target.
-When in doubt: needsClarification=false. Act and let the user correct.
-
-If needsClarification=true: question must be one short sentence about the missing required value only.
-If needsClarification=false: question must be empty string.`;
-
-    const userPrompt = [
-      `User command: ${command}`,
-      `Runtime context: ${runtimeContext ? JSON.stringify(runtimeContext) : 'none'}`,
-      `DOM context: ${JSON.stringify(domContext)}`
-    ].join('\n\n');
+    const userPrompt = buildTypedClarificationUserPrompt({
+      command,
+      context: {
+        context: domContext,
+        runtime:
+          runtimeContext && Object.keys(runtimeContext).length
+            ? runtimeContext
+            : undefined
+      }
+    });
 
     try {
       const response = await this.client.messages.create({
         model: 'claude-haiku-4-5-20251001',
         temperature: 0,
         max_tokens: 140,
-        system: decisionPrompt,
+        system: buildTypedClarificationSystemPrompt(),
         messages: [{ role: 'user', content: userPrompt }]
       });
 
@@ -884,7 +759,7 @@ If needsClarification=false: question must be empty string.`;
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
     this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
@@ -913,7 +788,7 @@ If needsClarification=false: question must be empty string.`;
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
     this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
@@ -934,25 +809,25 @@ If needsClarification=false: question must be empty string.`;
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
     this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
-    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
-    const newElementsContext = toNewElementContext(newElements);
+    const contextForClaude = this.createPromptContext(
+      compressed,
+      appMapSummary,
+      runtimeState,
+      input.toolCapabilityMap
+    );
 
-    const userPrompt = [
-      `User intent: ${command}`,
-      `Current page: ${compressed.currentRoute}`,
-      `Gaze target: ${compressed.gazeTargetId || 'null'}`,
-      `App context: ${JSON.stringify(contextForClaude)}`,
-      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
-      `Completed steps so far: ${JSON.stringify(completedSteps.slice(0, 12))}`,
-      `These new elements appeared: ${JSON.stringify(newElementsContext)}`,
-      `These new elements appeared. What additional steps are needed to complete the original intent of: ${command}? Return only remaining JSON steps.`
-    ].join('\n\n');
-
-    return this.callClaude(userPrompt);
+    return this.callClaude(
+      buildNewElementsUserPrompt({
+        command,
+        context: contextForClaude,
+        completedSteps,
+        newElements
+      })
+    );
   }
 
   async resolveFollowUp(
@@ -966,25 +841,26 @@ If needsClarification=false: question must be empty string.`;
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
     this.log('[Exocor] Capability map (full):', JSON.stringify(input.map, null, 2));
     this.log('[Exocor] Capability map:', JSON.stringify(compressed, null, 2));
 
-    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
-    const completedStepLabels = completedSteps.map((step) => step.reason || `${step.action} ${step.target || ''}`);
+    const contextForClaude = this.createPromptContext(
+      compressed,
+      appMapSummary,
+      runtimeState,
+      input.toolCapabilityMap
+    );
 
-    const userPrompt = [
-      `Original user intent: ${command}`,
-      `Steps already completed: ${JSON.stringify(completedStepLabels.slice(-20))}`,
-      `Current page: ${compressed.currentRoute}`,
-      `App context: ${JSON.stringify(contextForClaude)}`,
-      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
-      `Instruction: ${instruction}`,
-      'Return remaining steps only as valid JSON array. Return [] if complete.'
-    ].join('\n\n');
-
-    return this.callClaude(userPrompt);
+    return this.callClaude(
+      buildFollowUpUserPrompt({
+        command,
+        context: contextForClaude,
+        completedSteps,
+        instruction
+      })
+    );
   }
 
   /**
@@ -1002,13 +878,14 @@ If needsClarification=false: question must be empty string.`;
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const initialAppMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute, 800);
-    const liveDomContextForClaude = this.buildResolverContext(
+    const liveDomContextForClaude = this.createPromptContext(
       compressed,
       initialAppMapSummary,
       runtimeState,
-      input.toolCapabilityMap
+      input.toolCapabilityMap,
+      runtimeContext
     );
     const priorityDecision = this.classifyResolutionPriority(command, initialAppMapSummary);
     callbacks.onResolutionPriority?.(priorityDecision.priority);
@@ -1022,7 +899,13 @@ If needsClarification=false: question must be empty string.`;
     const contextForClaude =
       priorityDecision.priority === 'dom_only'
         ? liveDomContextForClaude
-        : this.buildAppMapFirstContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
+        : this.createAppMapFirstPromptContext(
+            compressed,
+            appMapSummary,
+            runtimeState,
+            input.toolCapabilityMap,
+            runtimeContext
+          );
     const contextInputMethod = input.inputMethod === 'text' ? 'typed' : input.inputMethod;
     const alreadyClarified = command.includes('|||clarified|||');
     if (
@@ -1038,84 +921,12 @@ If needsClarification=false: question must be empty string.`;
         return { type: 'text_response', text: clarificationQuestion };
       }
     }
-
-    const systemPrompt = `Respond with ONLY a JSON array of steps or a single clarification question. No explanation, no reasoning, no text before or after the JSON. If you need to think, think silently. Your entire response must be either:
-- A valid JSON array: [{...}, {...}]
-- A single clarification question (only when absolutely necessary)
-
-Never show your reasoning. Never show multiple versions.
-Never use element IDs as targets. Never use CSS selectors as targets.
-For click/fill/submit/scroll actions, target MUST be an app-map label string.
-Only navigate actions may target route paths (e.g. "/records").
-Tool actions must use toolId and args.
-
-You are an intelligent assistant embedded in a web application. Understand the user's goal and complete it fully in one plan.
-
-You have:
-- appMap: complete app structure — all routes, buttons, tabs, modals, and form fields discovered in advance
-- toolCapabilityMap: explicit app-native tools, including global tools, route-specific tools, and preferred tools for this command
-- runtimeState: current route/url + currently open dialogs + visible form fields + visible buttons
-- runtimeContext: SDK-derived metadata such as input method, gaze target/position, focused element, and selected text
-- Runtime executor: resolves label targets to live DOM elements at execution time
-- Input method: how the user gave the command
-
-You respond with either a JSON array of steps or a clarification question:
-[{"action":"click|fill|navigate|wait|scroll|tool","target":"label or route path","toolId":"registeredToolId","args":{"declared":"value"},"value":"string|null","waitForDOM":true|false,"reason":"string"}]
-
-HOW TO USE appMap:
-- appMap tells you what exists on each page: routes, buttons, tabs, modals, and form fields with their labels
-- Use appMap labels directly as action targets
-- Plan across page navigations using labels on destination pages
-- Example: navigate "/records" → click "New Record" → fill "Title" → click "Create"
-
-HOW TO USE toolCapabilityMap:
-- preferredToolIds and preferredForCommand identify the strongest semantic tool matches for this command
-- If one preferred tool fully covers the task, use it instead of reconstructing the same task with DOM/app-map steps
-- Prefer a registered tool when the tool is clearly a better fit than pure DOM or app-map inference
-- Never invent tool ids
-- Never invent argument names
-- Only use declared parameter names
-- Global tools can be used from any route
-- Route-specific tools remain available even when the current route is different
-- If a preferred route-specific tool has currentRouteMatches=false and requiresNavigation=true, it is valid and expected to plan navigate first and then the tool
-- If no tool is appropriate, continue with app-map and DOM planning
-- Destructive tools should only be used for explicit destructive intent
-- Example on-route preferred tool: [{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
-- Example off-route preferred tool: [{"action":"navigate","target":"/records","value":null,"waitForDOM":true,"reason":"navigate to records first"},{"action":"tool","toolId":"createRecord","args":{"title":"Quarterly review"},"reason":"use preferred app-native tool"}]
-
-NAVIGATION:
-- Plan the full workflow upfront using appMap knowledge
-- After a navigate action with waitForDOM:true, continue using app-map labels for subsequent steps
-- For tabs and filters: use the tab/filter label from appMap as the click target
-- 'go to X in Y' or 'navigate to X showing Y' means: navigate to X AND click the Y tab/filter
-- Never add a navigation step only to confirm a submit/create result unless the user explicitly requested navigation
-
-FORMS:
-- Fill only fields listed as form fields — never fill buttons
-- Submit buttons have labels like Create, Save, Submit, Add, Confirm — always CLICK the label target, never fill
-- Skip optional fields not mentioned by the user
-- Never re-fill a field already filled in completed steps
-- If runtimeState shows an open modal/dialog and user asks to fill/edit/select/submit, operate in that open modal/dialog in place
-- Do not navigate away or reopen a creation flow unless the user explicitly requested navigation/new flow
-- Only when no preferred tool applies should you reconstruct create/edit flows with click/fill/submit DOM steps
-
-GAZE:
-- Gaze context (gazeTarget) is provided for voice commands and indicates where the user was looking when they started speaking
-- Use gaze context only when it is semantically relevant to the command, such as 'this', 'that', 'here', 'it', or another on-screen reference without an explicit name
-- If the command is self-contained and unambiguous without gaze context (for example 'create a new record', 'navigate to reports', 'filter by critical priority'), ignore gazeTarget and resolve from the command alone
-- When gaze context is relevant, map it to the closest app-map label target
-
-Complete the full task end to end. Never stop halfway.`;
-    const userPrompt = [
-      `User command: ${command}`,
-      `Resolution priority: ${priorityDecision.priority} (${priorityDecision.reason})`,
-      `Runtime context: ${runtimeContext ? JSON.stringify(runtimeContext) : 'none'}`,
-      `DOM context: ${JSON.stringify(contextForClaude)}`,
-      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
-      `Current page: ${compressed.currentRoute}`,
-      `Gaze target: ${compressed.gazeTargetId || 'none'}`,
-      `Input method: ${contextInputMethod}`
-    ].join('\n\n');
+    const systemPrompt = buildPlannerSystemPrompt();
+    const userPrompt = buildPlannerUserPrompt({
+      command,
+      priority: priorityDecision.priority as PlannerPromptPriority,
+      context: contextForClaude
+    });
 
     try {
       const stream = await this.client.messages.create({
@@ -1176,7 +987,7 @@ Complete the full task end to end. Never stop halfway.`;
   private async resolveWithClaude(
     command: string,
     compressedMap: CompressedCapabilityMap,
-    runtimeState: RuntimeStateSnapshot,
+    runtimeState: ResolverRuntimeStateSnapshot,
     appMap: AppMapSummary | null | undefined,
     toolCapabilityMap: IntentResolutionInput['toolCapabilityMap'],
     failureContext: { failedStep: IntentStep; failureReason: string } | null
@@ -1186,28 +997,20 @@ Complete the full task end to end. Never stop halfway.`;
       return [];
     }
 
-    const contextForClaude = this.buildResolverContext(compressedMap, appMap, runtimeState, toolCapabilityMap);
+    const contextForClaude = this.createPromptContext(
+      compressedMap,
+      appMap,
+      runtimeState,
+      toolCapabilityMap
+    );
 
-    const userPrompt = failureContext
-      ? [
-          `User intent: ${command}`,
-          `Current page: ${compressedMap.currentRoute}`,
-          `Gaze target: ${compressedMap.gazeTargetId || 'null'}`,
-          `Failed step: ${JSON.stringify(failureContext.failedStep)}`,
-          `Failure reason: ${failureContext.failureReason}`,
-          `App context: ${JSON.stringify(contextForClaude)}`,
-          `Preferred tools for this command: ${buildPreferredToolPromptValue(toolCapabilityMap)}`,
-          'Provide corrected remaining steps only.'
-        ].join('\n\n')
-      : [
-          `User intent: ${command}`,
-          `Current page: ${compressedMap.currentRoute}`,
-          `Gaze target: ${compressedMap.gazeTargetId || 'null'}`,
-          `App context: ${JSON.stringify(contextForClaude)}`,
-          `Preferred tools for this command: ${buildPreferredToolPromptValue(toolCapabilityMap)}`
-        ].join('\n\n');
-
-    return this.callClaude(userPrompt);
+    return this.callClaude(
+      buildResolveUserPrompt({
+        command,
+        context: contextForClaude,
+        failureContext
+      })
+    );
   }
 
   async resolveWithPreferredToolRetry(
@@ -1222,32 +1025,26 @@ Complete the full task end to end. Never stop halfway.`;
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
-    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
+    const contextForClaude = this.createPromptContext(
+      compressed,
+      appMapSummary,
+      runtimeState,
+      input.toolCapabilityMap
+    );
     const preferredTool = input.toolCapabilityMap?.tools.find((tool) => tool.id === preferredToolId) || null;
 
-    const retrySystemPrompt = `${CLAUDE_SYSTEM_PROMPT}
-
-PREFERRED TOOL CORRECTION:
-- The previous plan ignored a strong preferred tool for this command.
-- Preferred tool: ${preferredToolId}
-- If this preferred tool can satisfy the task, you MUST use it instead of reconstructing the same workflow with DOM/app-map steps.
-- If the preferred tool is route-specific and off-route, you MUST plan navigate first and then the tool.
-- Only keep a DOM/app-map workflow if the preferred tool truly cannot satisfy the user's intent.`;
-
-    const userPrompt = [
-      `User intent: ${command}`,
-      `Current page: ${compressed.currentRoute}`,
-      `Preferred tool: ${preferredToolId}`,
-      `Preferred tool reasoning: ${preferredReason || preferredTool?.preferredReason || 'strong semantic match'}`,
-      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
-      `Previous plan to replace: ${JSON.stringify(rejectedPlan.steps)}`,
-      `App context: ${JSON.stringify(contextForClaude)}`,
-      'Replan once. Use the preferred tool if it can satisfy the task. Return corrected steps only as valid JSON.'
-    ].join('\n\n');
-
-    return this.callClaude(userPrompt, retrySystemPrompt);
+    return this.callClaude(
+      buildPreferredToolRetryUserPrompt({
+        command,
+        context: contextForClaude,
+        preferredToolId,
+        preferredReason: preferredReason || preferredTool?.preferredReason || 'strong semantic match',
+        rejectedPlan
+      }),
+      buildPreferredToolRetrySystemPrompt(preferredToolId)
+    );
   }
 
   async resolvePreferredToolIntent(
@@ -1264,9 +1061,14 @@ PREFERRED TOOL CORRECTION:
     }
 
     const compressed = buildCompressedCapabilityMap(input.map, input.gazeTarget);
-    const runtimeState = this.buildRuntimeStateSnapshot(input.map, compressed);
+    const runtimeState = this.createRuntimeStateSnapshot(input.map, compressed);
     const appMapSummary = this.summarizeAppMapForPrompt(input.appMap, compressed.currentRoute);
-    const contextForClaude = this.buildResolverContext(compressed, appMapSummary, runtimeState, input.toolCapabilityMap);
+    const contextForClaude = this.createPromptContext(
+      compressed,
+      appMapSummary,
+      runtimeState,
+      input.toolCapabilityMap
+    );
     const preferredTool = input.toolCapabilityMap?.tools.find((tool) => tool.id === preferredToolId) || null;
 
     if (!preferredTool) {
@@ -1276,55 +1078,21 @@ PREFERRED TOOL CORRECTION:
       };
     }
 
-    const systemPrompt = `You are a preferred-tool argument resolver.
-The host application has already selected one strong preferred tool as the authoritative execution path for this command.
-You do NOT decide whether to use DOM steps, app-map steps, or a different tool.
-Your only job is to prepare a safe invocation for the selected tool.
-
-Return ONLY one valid JSON object in exactly one of these shapes:
-{"status":"ready","args":{"declaredParam":"value"}}
-{"status":"clarification","question":"one short sentence"}
-{"status":"fallback","reason":"short reason"}
-
-Rules:
-- The selected tool is already the primary path unless it truly cannot satisfy the request.
-- Never return steps.
-- Never return DOM plans.
-- Never invent parameter names.
-- Only use declared parameter names from the selected tool schema.
-- Omit optional parameters unless the user explicitly asked for them or they can be inferred confidently.
-- If every required parameter is confidently available from the user command or context, return {"status":"ready","args":{...}}.
-- If a required parameter is missing and cannot be inferred confidently, return {"status":"clarification","question":"..."}.
-- Return {"status":"fallback","reason":"..."} only when the user's request clearly includes work that this tool cannot safely satisfy by itself.
-- If the tool is route-specific and the current route does not match, ignore navigation. The host will handle navigate then tool.
-- When in doubt, prefer ready if required args are known. Otherwise prefer clarification over fallback.`;
-
-    const userPrompt = [
-      `User intent: ${command}`,
-      `Current page: ${compressed.currentRoute}`,
-      `Selected preferred tool: ${JSON.stringify({
-        id: preferredTool.id,
-        description: preferredTool.description,
-        parameters: preferredTool.parameters,
-        routes: preferredTool.routes,
-        isGlobal: preferredTool.isGlobal,
-        currentRouteMatches: preferredTool.currentRouteMatches,
-        requiresNavigation: preferredTool.requiresNavigation,
-        safety: preferredTool.safety
-      })}`,
-      `Preferred tool reasoning: ${preferredReason || preferredTool.preferredReason || 'strong semantic match'}`,
-      `Preferred tools for this command: ${buildPreferredToolPromptValue(input.toolCapabilityMap)}`,
-      `App context: ${JSON.stringify(contextForClaude)}`,
-      'Return only the JSON object.'
-    ].join('\n\n');
-
     try {
       const response = await this.client.messages.create({
         model: 'claude-haiku-4-5-20251001',
         temperature: 0,
         max_tokens: 240,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
+        system: buildPreferredToolIntentSystemPrompt(),
+        messages: [{
+          role: 'user',
+          content: buildPreferredToolIntentUserPrompt({
+            command,
+            context: contextForClaude,
+            preferredReason: preferredReason || preferredTool.preferredReason || 'strong semantic match',
+            selectedTool: preferredTool
+          })
+        }]
       });
 
       const text = response.content
@@ -1348,7 +1116,7 @@ Rules:
     }
   }
 
-  private async callClaude(userPrompt: string, systemPrompt = CLAUDE_SYSTEM_PROMPT): Promise<IntentStep[]> {
+  private async callClaude(userPrompt: string, systemPrompt = buildPlannerSystemPrompt()): Promise<IntentStep[]> {
     if (!this.client) {
       return [];
     }

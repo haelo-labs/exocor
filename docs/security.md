@@ -19,9 +19,9 @@ For localhost testing, Exocor provides `npx exocor dev`.
 ## Production
 In production, the host app should expose a secure backend route, typically `/api/exocor/resolve`, using `createExocorResolverEndpoint`.
 
-## Context Controls
-- `contextPolicy` lets developers set a planning mode, apply a soft token budget, and force or suppress specific payload sections such as app-map summaries, live DOM details, dialogs, forms, tables/lists, gaze, selected text, and tools.
-- Default behavior stays close to the current product shape. Exocor compresses and prioritizes context before dropping it.
+## Context Budgeting
+- Exocor now keeps resolver requests compact by default. Route, tool, runtime, app-map, and live DOM context are compacted internally before each model call.
+- Token budgeting is internal to Exocor rather than a public SDK setting. The SDK preserves the same core context classes while sending a denser representation.
 
 ## Trust Controls
 - `trustPolicy.neverScan` excludes matching subtrees from live DOM scanning and app-map discovery.

@@ -70,13 +70,13 @@ Use this when you want the SDK around the app UI without registering explicit to
 
 `SpatialProvider.modalities` controls which modalities are available, not which ones must stay on. Users can toggle any available modality from the SDK chat panel at runtime. When both gaze and gesture are available, gesture depends on gaze: turning gaze off also turns gesture off, while turning gesture back on will reactivate gaze.
 
-## Context And Trust Controls
+## Trust Controls
 
-Exocor now lets you shape resolver payloads without turning discovery or tools off by default.
+Exocor now keeps resolver calls compact by default. Developers only need to configure trust boundaries when they want to exclude app areas, redact data, or disable specific higher-risk paths.
 
-- `contextPolicy` controls how much context Exocor sends and which sections are eligible.
-- `trustPolicy` controls which parts of the app are scanned, which parts are sent, and which higher-risk inference paths stay enabled.
-- Safe defaults stay close to current behavior: `mode: 'full'`, all sections on `auto`, and all trust features enabled.
+- Exocor internally budgets and compacts route, tool, runtime, and live DOM context before it reaches the model.
+- `trustPolicy` controls which parts of the app are scanned, which parts are sent, and which inference paths stay enabled.
+- Safe defaults stay close to current behavior: discovery, app-map planning, tools, and live DOM scanning remain on unless you opt out.
 
 ```tsx
 import { SpatialProvider } from 'exocor';
@@ -84,18 +84,6 @@ import { SpatialProvider } from 'exocor';
 export default function App() {
   return (
     <SpatialProvider
-      contextPolicy={{
-        mode: 'balanced',
-        maxContextTokens: 1800,
-        sections: {
-          appMap: 'always',
-          liveDom: 'auto',
-          dialogs: 'auto',
-          forms: 'auto',
-          tablesAndLists: 'never',
-          tools: 'always'
-        }
-      }}
       trustPolicy={{
         features: {
           remoteResolver: true,
@@ -121,10 +109,6 @@ export default function App() {
 }
 ```
 
-- `mode: 'full'` preserves the current broadest planning shape.
-- `mode: 'balanced'` keeps the same core signals but trims lower-value detail first.
-- `mode: 'lean'` pushes harder on payload size while still preserving route, tool, dialog, and active form context when relevant.
-- `maxContextTokens` is a soft budget. Exocor shrinks sections in priority order before it drops them.
 - `neverScan` keeps matching subtrees out of live DOM scans and app-map discovery.
 - `neverSend` allows local execution to keep using a subtree while stripping it from remote resolver payloads.
 - `redact` masks specific fields before resolver requests are sent.

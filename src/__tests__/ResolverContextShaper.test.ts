@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createCapabilityMap } from '../core/CapabilityMap';
 import { shapeResolverContext } from '../core/ResolverContextShaper';
-import { resolveContextPolicy, resolveTrustPolicy } from '../core/contextPolicy';
+import { resolveTrustPolicy } from '../core/contextPolicy';
 import type { AppMap, IntentResolutionInput, ToolCapabilityMap } from '../types';
 
 function buildInput(overrides: Partial<IntentResolutionInput> = {}): IntentResolutionInput {
@@ -191,7 +191,7 @@ describe('ResolverContextShaper', () => {
         selectedText: 'Pump Failure',
         focusedElement: { elementId: 'public-title', type: 'text' }
       },
-      contextPolicy: resolveContextPolicy({ mode: 'balanced' }),
+      requestKind: 'plan',
       trustPolicy: resolveTrustPolicy({
         neverSend: ['#secret-token']
       })
@@ -203,6 +203,7 @@ describe('ResolverContextShaper', () => {
     expect(JSON.stringify(shaped.input.appMap)).not.toContain('Secret Token');
     expect(JSON.stringify(shaped.input.appMap)).not.toContain('selectorCandidates');
     expect(shaped.report.filteredByNeverSend).toBeGreaterThan(0);
+    expect(shaped.report.estimatedTokens).toBeLessThanOrEqual(shaped.report.targetTokens);
   });
 
   it('redacts configured fields and reports the redaction count', () => {
@@ -215,7 +216,7 @@ describe('ResolverContextShaper', () => {
         selectedText: 'Pump Failure',
         focusedElement: { elementId: 'public-title', type: 'text' }
       },
-      contextPolicy: resolveContextPolicy({ mode: 'full' }),
+      requestKind: 'plan',
       trustPolicy: resolveTrustPolicy({
         redact: [
           {
@@ -236,30 +237,31 @@ describe('ResolverContextShaper', () => {
     expect(shaped.report.redactedFields).toBeGreaterThan(0);
   });
 
-  it('honors lean mode and tool section exclusions', () => {
-    const input = buildInput({
-      command: 'open this'
-    });
-    const shaped = shapeResolverContext({
-      input,
+  it('keeps preferred-tool argument resolution on a smaller internal budget', () => {
+    const planShaped = shapeResolverContext({
+      input: buildInput(),
       runtimeContext: {
-        inputMethod: 'voice',
-        gazeTarget: { elementId: 'create-ticket', text: 'Create' },
-        gazePosition: { x: 40, y: 140 }
+        inputMethod: 'typed',
+        selectedText: 'Pump Failure'
       },
-      contextPolicy: resolveContextPolicy({
-        mode: 'lean',
-        sections: {
-          tools: 'never'
-        }
-      }),
+      requestKind: 'plan',
       trustPolicy: resolveTrustPolicy({})
     });
 
-    expect(shaped.input.toolCapabilityMap).toBeNull();
-    expect(shaped.input.map.elements.length).toBeLessThanOrEqual(16);
-    expect(shaped.input.appMap).toBeTruthy();
-    expect(shaped.report.droppedSections).toContain('tools');
+    const preferredToolShaped = shapeResolverContext({
+      input: buildInput(),
+      runtimeContext: {
+        inputMethod: 'typed',
+        selectedText: 'Pump Failure'
+      },
+      requestKind: 'preferred_tool_intent',
+      trustPolicy: resolveTrustPolicy({})
+    });
+
+    expect(preferredToolShaped.input.toolCapabilityMap?.tools.length).toBe(1);
+    expect(preferredToolShaped.report.targetTokens).toBe(3000);
+    expect(preferredToolShaped.report.estimatedTokens).toBeLessThanOrEqual(preferredToolShaped.report.targetTokens);
+    expect(preferredToolShaped.report.estimatedTokens).toBeLessThan(planShaped.report.estimatedTokens);
   });
 
   it('drops live DOM payloads when live DOM scanning is disabled', () => {
@@ -268,7 +270,7 @@ describe('ResolverContextShaper', () => {
       runtimeContext: {
         inputMethod: 'typed'
       },
-      contextPolicy: resolveContextPolicy({ mode: 'full' }),
+      requestKind: 'plan',
       trustPolicy: resolveTrustPolicy({
         features: {
           liveDomScanning: false

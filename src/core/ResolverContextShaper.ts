@@ -1,10 +1,19 @@
 import { createCapabilityMap } from './CapabilityMap';
 import { summarizeAppMapForResolver } from './DOMScanner';
 import {
+  buildNewElementsUserPrompt,
+  buildPlannerSystemPrompt,
+  buildPlannerUserPrompt,
+  buildPreferredToolIntentSystemPrompt,
+  buildPreferredToolIntentUserPrompt,
+  buildPromptContext,
+  buildResolveUserPrompt,
+  buildRuntimeStateSnapshot,
+  estimateResolverRequestTokens
+} from './resolverPrompts';
+import {
   applyRedactionRule,
-  findMatchingRedactionRule,
   matchesPolicySelectors,
-  type ResolvedExocorContextPolicy,
   type ResolvedExocorTrustPolicy
 } from './contextPolicy';
 import type {
@@ -13,10 +22,35 @@ import type {
   DOMCapabilityMap,
   DOMElementDescriptor,
   IntentResolutionInput,
-  ToolCapabilityMap
+  IntentStep,
+  ToolCapabilityMap,
+  ToolCapabilityEntry
 } from '../types';
 
 type ResolverContextProfile = 'tool_first' | 'navigation' | 'form' | 'retrieval' | 'referential' | 'general';
+export type ResolverRequestKind = 'plan' | 'resolve' | 'failed_step' | 'new_elements' | 'preferred_tool_intent';
+
+interface ResolverBudgetConfig {
+  targetTokens: number;
+  appMapTokenBudget: number;
+  elementLimit: number;
+  toolLimit: number;
+  routeLimit: number;
+  headingLimit: number;
+  navigationLimit: number;
+  formLimit: number;
+  buttonLimit: number;
+  dialogLimit: number;
+  tableRowLimit: number;
+  listItemLimit: number;
+  cardLimit: number;
+  badgeLimit: number;
+  stateHintLimit: number;
+  includeLiveDom: boolean;
+  includeTablesAndLists: boolean;
+  includeSelectedText: boolean;
+  includeGaze: boolean;
+}
 
 interface MutableContextCandidate {
   mapBase: Omit<DOMCapabilityMap, 'compressed' | 'updatedAt'>;
@@ -26,9 +60,9 @@ interface MutableContextCandidate {
 }
 
 export interface ResolverContextDebugReport {
-  mode: ResolvedExocorContextPolicy['mode'];
+  requestKind: ResolverRequestKind;
   profile: ResolverContextProfile;
-  maxContextTokens: number;
+  targetTokens: number;
   estimatedTokens: number;
   includedSections: string[];
   droppedSections: string[];
@@ -50,36 +84,18 @@ const FORM_PATTERN = /\b(create|add|new|edit|update|fill|submit|save|assign|chan
 const RETRIEVAL_PATTERN = /\b(which|what|find|search|lookup|row|result|list|table|record|ticket|item)\b/i;
 const VALUE_PATTERN =
   /\b(?:title|name|priority|status|type|assignee|owner|email|phone|date|time|description|tag|category)\b\s*(?:is|=|:)\s*["']?[^,"'\n]+["']?/i;
-const APP_MAP_TOKEN_BUDGETS: Record<ResolvedExocorContextPolicy['mode'], number> = {
-  full: 900,
-  balanced: 650,
-  lean: 420
-};
-const ELEMENT_LIMITS: Record<ResolvedExocorContextPolicy['mode'], number> = {
-  full: 64,
-  balanced: 36,
-  lean: 16
-};
-const TOOL_LIMITS: Record<ResolvedExocorContextPolicy['mode'], number> = {
-  full: 12,
-  balanced: 8,
-  lean: 4
-};
-
-function estimateTokens(payload: unknown): number {
-  return Math.ceil(JSON.stringify(payload).length / 4);
-}
 
 function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, ' ');
 }
 
-function truncate(value: string, maxLength = 120): string {
-  if (value.length <= maxLength) {
-    return value;
+function truncate(value: string | null | undefined, maxLength = 120): string {
+  const normalized = value || '';
+  if (normalized.length <= maxLength) {
+    return normalized;
   }
 
-  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
 function toCommandTokens(command: string): string[] {
@@ -125,26 +141,56 @@ function inferContextProfile(input: IntentResolutionInput, runtimeContext?: Reco
   return 'general';
 }
 
-function shouldIncludeSection(
-  sectionMode: 'auto' | 'always' | 'never',
-  autoEnabled: boolean
-): boolean {
-  if (sectionMode === 'always') {
-    return true;
-  }
-  if (sectionMode === 'never') {
-    return false;
-  }
-  return autoEnabled;
-}
+function buildBudgetConfig(requestKind: ResolverRequestKind, profile: ResolverContextProfile): ResolverBudgetConfig {
+  const plannerRequest = requestKind === 'plan' || requestKind === 'resolve';
+  const lowBudgetRequest = requestKind === 'failed_step' || requestKind === 'new_elements' || requestKind === 'preferred_tool_intent';
 
-function cloneElement(element: DOMElementDescriptor): DOMElementDescriptor {
   return {
-    ...element,
-    handlers: element.handlers ? [...element.handlers] : undefined,
-    props: element.props ? { ...element.props } : undefined,
-    state: element.state ? [...element.state] : undefined,
-    rect: { ...element.rect }
+    targetTokens: plannerRequest ? 5000 : 3000,
+    appMapTokenBudget: requestKind === 'preferred_tool_intent' ? 450 : plannerRequest ? 1050 : 700,
+    elementLimit:
+      requestKind === 'preferred_tool_intent'
+        ? 4
+        : profile === 'form'
+          ? plannerRequest
+            ? 12
+            : 8
+          : profile === 'retrieval'
+            ? plannerRequest
+              ? 12
+              : 8
+            : profile === 'referential'
+              ? 10
+              : profile === 'navigation'
+                ? 8
+                : profile === 'tool_first'
+                  ? 6
+                  : 9,
+    toolLimit:
+      requestKind === 'preferred_tool_intent'
+        ? 1
+        : profile === 'tool_first'
+          ? 3
+          : lowBudgetRequest
+            ? 2
+            : 4,
+    routeLimit: plannerRequest ? 6 : 4,
+    headingLimit: plannerRequest ? 4 : 2,
+    navigationLimit: plannerRequest ? 10 : 6,
+    formLimit: profile === 'form' ? (plannerRequest ? 10 : 6) : plannerRequest ? 4 : 3,
+    buttonLimit: profile === 'form' || profile === 'navigation' ? (plannerRequest ? 8 : 5) : plannerRequest ? 5 : 4,
+    dialogLimit: profile === 'form' ? 3 : 2,
+    tableRowLimit: profile === 'retrieval' ? (plannerRequest ? 3 : 2) : 0,
+    listItemLimit: profile === 'retrieval' ? (plannerRequest ? 5 : 3) : 0,
+    cardLimit: profile === 'retrieval' && plannerRequest ? 2 : 0,
+    badgeLimit: profile === 'retrieval' || profile === 'navigation' ? 4 : 0,
+    stateHintLimit: profile === 'form' || profile === 'navigation' ? 4 : 2,
+    includeLiveDom:
+      requestKind !== 'preferred_tool_intent' &&
+      (profile === 'form' || profile === 'retrieval' || profile === 'referential' || profile === 'general'),
+    includeTablesAndLists: profile === 'retrieval',
+    includeSelectedText: profile === 'retrieval' || profile === 'general',
+    includeGaze: profile === 'referential'
   };
 }
 
@@ -172,6 +218,26 @@ function redactString(
   return nextValue;
 }
 
+function compactTransportElement(element: DOMElementDescriptor): DOMElementDescriptor {
+  return {
+    id: element.id,
+    selector: element.selector,
+    label: truncate(element.label, 64),
+    text: truncate(element.text, 80),
+    fillable: element.fillable,
+    componentName: element.componentName ? truncate(element.componentName, 48) : null,
+    handlers: element.handlers ? [...element.handlers].slice(0, 2) : undefined,
+    role: element.role,
+    tagName: element.tagName,
+    type: element.type,
+    ariaLabel: truncate(element.ariaLabel, 48),
+    placeholder: truncate(element.placeholder, 48),
+    value: truncate(element.value, 56),
+    disabled: element.disabled,
+    rect: { ...element.rect }
+  };
+}
+
 function scoreElement(
   element: DOMElementDescriptor,
   profile: ResolverContextProfile,
@@ -186,19 +252,19 @@ function scoreElement(
   }
 
   if (element.fillable) {
-    score += profile === 'form' ? 90 : 35;
+    score += profile === 'form' ? 100 : 25;
   }
 
   if (element.tagName === 'button' || element.role === 'button') {
-    score += profile === 'form' || profile === 'navigation' ? 50 : 20;
+    score += profile === 'form' || profile === 'navigation' ? 48 : 18;
   }
 
   if (element.tagName === 'a' || element.role === 'link' || element.href) {
-    score += profile === 'navigation' ? 70 : 18;
+    score += profile === 'navigation' ? 70 : 14;
   }
 
   if (profile === 'retrieval' && (element.tagName === 'tr' || element.role === 'row')) {
-    score += 55;
+    score += 48;
   }
 
   if (profile === 'tool_first') {
@@ -206,20 +272,17 @@ function scoreElement(
   }
 
   if (/(create|save|submit|confirm|apply|finish)/i.test(searchable)) {
-    score += profile === 'form' ? 60 : 20;
+    score += profile === 'form' ? 40 : 12;
   }
 
   for (const token of commandTokens) {
-    if (!token || token.length < 2) {
-      continue;
-    }
-    if (searchable.includes(token)) {
+    if (token.length > 1 && searchable.includes(token)) {
       score += 10;
     }
   }
 
   if (element.disabled) {
-    score -= 20;
+    score -= 16;
   }
 
   return score;
@@ -228,18 +291,11 @@ function scoreElement(
 function shapeElements(
   input: IntentResolutionInput,
   trustPolicy: ResolvedExocorTrustPolicy,
-  contextPolicy: ResolvedExocorContextPolicy,
+  budget: ResolverBudgetConfig,
   profile: ResolverContextProfile,
   counters: { filteredByNeverSend: number; redactedFields: number }
 ): DOMElementDescriptor[] {
   const commandTokens = toCommandTokens(input.command);
-  const limitBase = ELEMENT_LIMITS[contextPolicy.mode];
-  const limit =
-    profile === 'tool_first'
-      ? Math.min(limitBase, contextPolicy.mode === 'full' ? 12 : 6)
-      : profile === 'navigation'
-        ? Math.min(limitBase, contextPolicy.mode === 'full' ? 24 : 12)
-        : limitBase;
 
   return input.map.elements
     .filter((element) => {
@@ -250,7 +306,7 @@ function shapeElements(
       return !shouldDrop;
     })
     .map((element) => {
-      const nextElement = cloneElement(element);
+      const nextElement = compactTransportElement(element);
       nextElement.label = redactString(
         nextElement.label || '',
         {
@@ -304,59 +360,192 @@ function shapeElements(
       return nextElement;
     })
     .sort((left, right) => scoreElement(right, profile, commandTokens, input.gazeTarget) - scoreElement(left, profile, commandTokens, input.gazeTarget))
-    .slice(0, limit);
+    .slice(0, budget.elementLimit);
+}
+
+function trimToolParameterOptions(options: string[] | undefined): string[] | undefined {
+  if (!Array.isArray(options) || !options.length) {
+    return undefined;
+  }
+
+  return options.slice(0, 6).map((option) => truncate(option, 24));
+}
+
+function compactToolEntry(tool: ToolCapabilityEntry): ToolCapabilityEntry {
+  return {
+    ...tool,
+    description: truncate(tool.description, 72),
+    parameters: (tool.parameters || []).slice(0, 8).map((parameter) => ({
+      ...parameter,
+      description: truncate(parameter.description, 40),
+      ...(trimToolParameterOptions(parameter.options) ? { options: trimToolParameterOptions(parameter.options) } : {})
+    })),
+    routes: (tool.routes || []).slice(0, 2),
+    preferredReason: undefined
+  };
+}
+
+function prioritizeTool(
+  tool: ToolCapabilityEntry,
+  currentRoute: string,
+  preferredToolIds: Set<string>,
+  commandTokens: string[]
+): number {
+  let score = tool.semanticScore || 0;
+
+  if (preferredToolIds.has(tool.id)) {
+    score += 100;
+  }
+  if (tool.preferredForCommand) {
+    score += 40;
+  }
+  if (tool.currentRouteMatches || tool.routes.includes(currentRoute)) {
+    score += 20;
+  }
+  if (tool.isGlobal) {
+    score += 8;
+  }
+
+  const searchable = `${tool.id} ${tool.description} ${(tool.parameters || []).map((parameter) => `${parameter.name} ${parameter.description || ''}`).join(' ')}`.toLowerCase();
+  for (const token of commandTokens) {
+    if (token.length > 1 && searchable.includes(token)) {
+      score += 6;
+    }
+  }
+
+  return score;
 }
 
 function shapeToolCapabilityMap(
   toolCapabilityMap: IntentResolutionInput['toolCapabilityMap'],
   currentRoute: string,
-  contextPolicy: ResolvedExocorContextPolicy,
-  profile: ResolverContextProfile
+  budget: ResolverBudgetConfig,
+  profile: ResolverContextProfile,
+  command: string,
+  requestKind: ResolverRequestKind
 ): ToolCapabilityMap | null {
   if (!toolCapabilityMap?.tools?.length) {
     return null;
   }
 
-  const limitBase = TOOL_LIMITS[contextPolicy.mode];
-  const limit = profile === 'tool_first' ? Math.max(limitBase, 6) : limitBase;
   const preferredToolIds = new Set(toolCapabilityMap.preferredToolIds || []);
-  const prioritized = [...toolCapabilityMap.tools].sort((left, right) => {
-    const leftPreferred = preferredToolIds.has(left.id) ? 1 : 0;
-    const rightPreferred = preferredToolIds.has(right.id) ? 1 : 0;
-    if (leftPreferred !== rightPreferred) {
-      return rightPreferred - leftPreferred;
-    }
-    const leftRoute = left.currentRouteMatches || left.routes.includes(currentRoute) ? 1 : 0;
-    const rightRoute = right.currentRouteMatches || right.routes.includes(currentRoute) ? 1 : 0;
-    if (leftRoute !== rightRoute) {
-      return rightRoute - leftRoute;
-    }
-    return (right.semanticScore || 0) - (left.semanticScore || 0);
-  });
+  const commandTokens = toCommandTokens(command);
+  const limit = requestKind === 'preferred_tool_intent'
+    ? 1
+    : profile === 'tool_first'
+      ? Math.max(2, budget.toolLimit)
+      : budget.toolLimit;
 
-  const selected = prioritized.slice(0, limit);
-  const selectedIds = new Set(selected.map((tool) => tool.id));
+  const prioritized = [...toolCapabilityMap.tools]
+    .sort((left, right) => prioritizeTool(right, currentRoute, preferredToolIds, commandTokens) - prioritizeTool(left, currentRoute, preferredToolIds, commandTokens))
+    .slice(0, limit)
+    .map((tool) => compactToolEntry(tool));
+
+  const selectedIds = new Set(prioritized.map((tool) => tool.id));
 
   return {
     currentRoute: toolCapabilityMap.currentRoute,
-    preferredToolIds: toolCapabilityMap.preferredToolIds.filter((toolId) => selectedIds.has(toolId)),
-    tools: selected
+    preferredToolIds: (toolCapabilityMap.preferredToolIds || []).filter((toolId) => selectedIds.has(toolId)),
+    tools: prioritized
   };
+}
+
+function normalizeRouteTokens(value: unknown): string[] {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9/_-]/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim().replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean)
+    .map((token) => token.replace(/[-_]/g, ' '))
+    .flatMap((token) => token.split(/\s+/))
+    .map((token) => token.replace(/s$/, ''))
+    .filter((token) => token.length > 1);
+}
+
+function routeEntryLabel(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.label === 'string') {
+    return record.label;
+  }
+  if (typeof record.path === 'string') {
+    return record.path;
+  }
+  if (typeof record.title === 'string') {
+    return record.title;
+  }
+
+  return '';
+}
+
+function inferAnchorRoute(
+  command: string,
+  appMap: AppMap | AppMapSummary | null | undefined,
+  currentRoute: string,
+  toolCapabilityMap: ToolCapabilityMap | null
+): string | null {
+  const preferredTool = toolCapabilityMap?.tools.find((tool) => (toolCapabilityMap.preferredToolIds || []).includes(tool.id));
+  if (preferredTool && !preferredTool.currentRouteMatches && !preferredTool.isGlobal && preferredTool.routes.length) {
+    return preferredTool.routes[0] || null;
+  }
+
+  if (!appMap?.routes?.length) {
+    return null;
+  }
+
+  const commandTokens = new Set(normalizeRouteTokens(command));
+  let bestRoute: string | null = null;
+  let bestScore = 0;
+
+  for (const route of appMap.routes) {
+    const routeTokens = new Set<string>();
+    normalizeRouteTokens(route.path).forEach((token) => routeTokens.add(token));
+    normalizeRouteTokens(route.title).forEach((token) => routeTokens.add(token));
+    route.navigationLinks.forEach((entry) => normalizeRouteTokens(entry.label).forEach((token) => routeTokens.add(token)));
+    route.buttons.forEach((entry) => normalizeRouteTokens(routeEntryLabel(entry)).forEach((token) => routeTokens.add(token)));
+    route.tabs.forEach((entry) => normalizeRouteTokens(routeEntryLabel(entry)).forEach((token) => routeTokens.add(token)));
+    route.filters.forEach((entry) => normalizeRouteTokens(routeEntryLabel(entry)).forEach((token) => routeTokens.add(token)));
+    route.modalTriggers.forEach((entry) => normalizeRouteTokens(routeEntryLabel(entry)).forEach((token) => routeTokens.add(token)));
+
+    let score = 0;
+    for (const token of routeTokens) {
+      if (commandTokens.has(token)) {
+        score += 1;
+      }
+    }
+    if ((route.path || '/') === currentRoute) {
+      score -= 2;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestRoute = route.path;
+    }
+  }
+
+  return bestScore > 0 ? bestRoute : null;
 }
 
 function filterAndSummarizeAppMap(
   appMap: AppMap | AppMapSummary | null | undefined,
   currentRoute: string,
-  contextPolicy: ResolvedExocorContextPolicy,
   trustPolicy: ResolvedExocorTrustPolicy,
-  counters: { filteredByNeverSend: number; redactedFields: number }
+  budget: ResolverBudgetConfig,
+  counters: { filteredByNeverSend: number; redactedFields: number },
+  anchorRoute?: string | null
 ): AppMapSummary | null {
   if (!appMap) {
     return null;
   }
 
   if ('tokenEstimate' in appMap) {
-    return summarizeAppMapForResolver(appMap, currentRoute, APP_MAP_TOKEN_BUDGETS[contextPolicy.mode]);
+    return summarizeAppMapForResolver(appMap, currentRoute, budget.appMapTokenBudget, anchorRoute);
   }
 
   const filteredRoutes = appMap.routes.map((route) => ({
@@ -372,7 +561,7 @@ function filterAndSummarizeAppMap(
       .map((entry) => ({
         ...entry,
         label: redactString(
-          entry.label || '',
+          truncate(entry.label, 48),
           {
             rules: trustPolicy.redact,
             field: 'label',
@@ -393,7 +582,7 @@ function filterAndSummarizeAppMap(
       .map((trigger) => ({
         ...trigger,
         label: redactString(
-          trigger.label || '',
+          truncate(trigger.label, 48),
           {
             rules: trustPolicy.redact,
             field: 'label',
@@ -415,7 +604,7 @@ function filterAndSummarizeAppMap(
             .map((field) => ({
               ...field,
               label: redactString(
-                field.label || '',
+                truncate(field.label, 48),
                 {
                   rules: trustPolicy.redact,
                   field: 'label',
@@ -423,7 +612,8 @@ function filterAndSummarizeAppMap(
                   selectorCandidates: field.selectorCandidates
                 },
                 counters
-              )
+              ),
+              options: (field.options || []).slice(0, 4).map((option) => truncate(option, 24))
             })),
           buttons: trigger.modalContents.buttons
             .filter((button) => {
@@ -437,7 +627,7 @@ function filterAndSummarizeAppMap(
             .map((button) => ({
               ...button,
               label: redactString(
-                button.label || '',
+                truncate(button.label, 48),
                 {
                   rules: trustPolicy.redact,
                   field: 'label',
@@ -461,7 +651,7 @@ function filterAndSummarizeAppMap(
       .map((field) => ({
         ...field,
         label: redactString(
-          field.label || '',
+          truncate(field.label, 48),
           {
             rules: trustPolicy.redact,
             field: 'label',
@@ -469,7 +659,8 @@ function filterAndSummarizeAppMap(
             selectorCandidates: field.selectorCandidates
           },
           counters
-        )
+        ),
+        options: (field.options || []).slice(0, 4).map((option) => truncate(option, 24))
       })),
     buttons: route.buttons
       .filter((button) => {
@@ -483,7 +674,7 @@ function filterAndSummarizeAppMap(
       .map((button) => ({
         ...button,
         label: redactString(
-          button.label || '',
+          truncate(button.label, 48),
           {
             rules: trustPolicy.redact,
             field: 'label',
@@ -505,7 +696,7 @@ function filterAndSummarizeAppMap(
       .map((filter) => ({
         ...filter,
         label: redactString(
-          filter.label || '',
+          truncate(filter.label, 48),
           {
             rules: trustPolicy.redact,
             field: 'label',
@@ -514,9 +705,9 @@ function filterAndSummarizeAppMap(
           },
           counters
         ),
-        options: filter.options.map((option) =>
+        options: filter.options.slice(0, 4).map((option) =>
           redactString(
-            option || '',
+            truncate(option, 24),
             {
               rules: trustPolicy.redact,
               field: 'label',
@@ -539,7 +730,7 @@ function filterAndSummarizeAppMap(
       .map((tab) => ({
         ...tab,
         label: redactString(
-          tab.label || '',
+          truncate(tab.label, 48),
           {
             rules: trustPolicy.redact,
             field: 'label',
@@ -564,24 +755,26 @@ function filterAndSummarizeAppMap(
       routes: filteredRoutes
     },
     currentRoute,
-    APP_MAP_TOKEN_BUDGETS[contextPolicy.mode]
+    budget.appMapTokenBudget,
+    anchorRoute
   );
 }
 
 function toTransportMap(map: DOMCapabilityMap): DOMCapabilityMap {
   const compressed = {
     ...map.compressed,
-    elements: [],
-    selectorMap: {},
-    tokenEstimate: estimateTokens({
-      pageSummary: map.compressed.pageSummary,
-      currentRoute: map.compressed.currentRoute,
-      currentUrl: map.compressed.currentUrl,
-      routes: map.compressed.routes,
-      gazeTargetId: map.compressed.gazeTargetId,
-      tableSummary: map.compressed.tableSummary,
-      listSummary: map.compressed.listSummary
-    })
+    tokenEstimate: Math.ceil(
+      JSON.stringify({
+        pageSummary: map.compressed.pageSummary,
+        currentRoute: map.compressed.currentRoute,
+        currentUrl: map.compressed.currentUrl,
+        routes: map.compressed.routes,
+        gazeTargetId: map.compressed.gazeTargetId,
+        elements: map.compressed.elements,
+        tableSummary: map.compressed.tableSummary,
+        listSummary: map.compressed.listSummary
+      }).length / 4
+    )
   };
 
   return {
@@ -593,11 +786,7 @@ function toTransportMap(map: DOMCapabilityMap): DOMCapabilityMap {
 function buildRuntimeContext(
   input: IntentResolutionInput,
   runtimeContext: Record<string, unknown> | undefined,
-  sections: {
-    forms: boolean;
-    gaze: boolean;
-    selectedText: boolean;
-  },
+  budget: ResolverBudgetConfig,
   trustPolicy: ResolvedExocorTrustPolicy
 ): Record<string, unknown> | undefined {
   if (!runtimeContext) {
@@ -609,22 +798,18 @@ function buildRuntimeContext(
     nextContext.inputMethod = runtimeContext.inputMethod;
   }
 
-  if (sections.selectedText && typeof runtimeContext.selectedText === 'string' && runtimeContext.selectedText.trim()) {
-    nextContext.selectedText = truncate(runtimeContext.selectedText.trim(), 200);
+  if (typeof runtimeContext.selectedText === 'string' && runtimeContext.selectedText.trim()) {
+    nextContext.selectedText = truncate(runtimeContext.selectedText.trim(), 120);
   }
 
-  if (sections.gaze && runtimeContext.gazeTarget && typeof runtimeContext.gazeTarget === 'object') {
+  if (runtimeContext.gazeTarget && typeof runtimeContext.gazeTarget === 'object') {
     nextContext.gazeTarget = runtimeContext.gazeTarget;
   }
-  if (sections.gaze && runtimeContext.gazePosition && typeof runtimeContext.gazePosition === 'object') {
+  if (runtimeContext.gazePosition && typeof runtimeContext.gazePosition === 'object') {
     nextContext.gazePosition = runtimeContext.gazePosition;
   }
 
-  if (
-    (sections.forms || sections.selectedText || input.inputMethod === 'text') &&
-    runtimeContext.focusedElement &&
-    typeof runtimeContext.focusedElement === 'object'
-  ) {
+  if (runtimeContext.focusedElement && typeof runtimeContext.focusedElement === 'object') {
     const focusedElement = runtimeContext.focusedElement as Record<string, unknown>;
     const elementId = typeof focusedElement.elementId === 'string' ? focusedElement.elementId : '';
     const originalElement = input.map.elements.find((element) => element.id === elementId) || null;
@@ -637,7 +822,13 @@ function buildRuntimeContext(
       });
 
     if (!shouldDropFocusedElement) {
-      nextContext.focusedElement = focusedElement;
+      nextContext.focusedElement = {
+        elementId,
+        label: typeof focusedElement.label === 'string' ? truncate(focusedElement.label, 48) : undefined,
+        text: typeof focusedElement.text === 'string' ? truncate(focusedElement.text, 48) : undefined,
+        role: typeof focusedElement.role === 'string' ? focusedElement.role : undefined,
+        type: typeof focusedElement.type === 'string' ? focusedElement.type : undefined
+      };
     }
   }
 
@@ -647,45 +838,27 @@ function buildRuntimeContext(
 function createInitialCandidate(
   input: IntentResolutionInput,
   runtimeContext: Record<string, unknown> | undefined,
-  contextPolicy: ResolvedExocorContextPolicy,
   trustPolicy: ResolvedExocorTrustPolicy,
+  requestKind: ResolverRequestKind,
   profile: ResolverContextProfile,
   counters: { filteredByNeverSend: number; redactedFields: number }
-): { candidate: MutableContextCandidate; includedSections: string[]; droppedSections: string[] } {
+): { candidate: MutableContextCandidate; includedSections: string[]; droppedSections: string[]; budget: ResolverBudgetConfig } {
+  const budget = buildBudgetConfig(requestKind, profile);
   const hasOpenDialogs = input.map.dialogs.some((dialog) => dialog.isOpen);
-  const includeAppMap = shouldIncludeSection(contextPolicy.sections.appMap, true);
-  const includeTools = shouldIncludeSection(contextPolicy.sections.tools, Boolean(input.toolCapabilityMap?.tools?.length));
-  const includeForms = shouldIncludeSection(
-    contextPolicy.sections.forms,
-    input.map.formState.length > 0 && (profile === 'form' || profile === 'general')
-  );
-  const includeDialogs = shouldIncludeSection(
-    contextPolicy.sections.dialogs,
-    hasOpenDialogs && (profile === 'form' || profile === 'general')
-  );
-  const includeTablesAndLists = shouldIncludeSection(
-    contextPolicy.sections.tablesAndLists,
-    (input.map.tableRows.length > 0 || input.map.listItems.length > 0) && profile === 'retrieval'
-  );
-  const includeGaze = shouldIncludeSection(
-    contextPolicy.sections.gaze,
-    input.inputMethod === 'voice' &&
-      (contextPolicy.mode === 'full' || profile === 'referential' || Boolean(runtimeContext?.gazeTarget || input.gazeTarget))
-  );
-  const includeSelectedText = shouldIncludeSection(
-    contextPolicy.sections.selectedText,
-    typeof runtimeContext?.selectedText === 'string' && runtimeContext.selectedText.trim().length > 0
-  );
-  const includeLiveDom = shouldIncludeSection(
-    contextPolicy.sections.liveDom,
-    trustPolicy.features.liveDomScanning &&
-      (profile === 'form' || profile === 'retrieval' || profile === 'referential' || contextPolicy.mode === 'full')
+  const includeTools = trustPolicy.features.tools && Boolean(input.toolCapabilityMap?.tools?.length);
+  const includeForms = input.map.formState.length > 0 && (profile === 'form' || profile === 'general' || hasSpecificFieldValues(input.command));
+  const includeDialogs = hasOpenDialogs && (profile === 'form' || profile === 'general');
+  const includeTablesAndLists = budget.includeTablesAndLists && (input.map.tableRows.length > 0 || input.map.listItems.length > 0);
+  const includeLiveDom = trustPolicy.features.liveDomScanning && budget.includeLiveDom;
+  const preserveFormValues = profile === 'form' || hasSpecificFieldValues(input.command);
+  const anchorRoute = inferAnchorRoute(
+    input.command,
+    input.appMap || null,
+    input.map.currentRoute,
+    input.toolCapabilityMap || null
   );
 
-  const preserveFormValues = profile === 'form' || hasSpecificFieldValues(input.command);
-  const elements = trustPolicy.features.liveDomScanning && includeLiveDom
-    ? shapeElements(input, trustPolicy, contextPolicy, profile, counters)
-    : [];
+  const elements = includeLiveDom ? shapeElements(input, trustPolicy, budget, profile, counters) : [];
 
   const navigation = input.map.navigation
     .filter((entry) => {
@@ -695,11 +868,11 @@ function createInitialCandidate(
       }
       return !shouldDrop;
     })
-    .slice(0, contextPolicy.mode === 'lean' ? 8 : 16)
+    .slice(0, budget.navigationLimit)
     .map((entry) => ({
       ...entry,
       label: redactString(
-        entry.label || '',
+        truncate(entry.label, 48),
         {
           rules: trustPolicy.redact,
           field: 'label',
@@ -719,11 +892,11 @@ function createInitialCandidate(
           }
           return !shouldDrop;
         })
-        .slice(0, contextPolicy.mode === 'lean' ? 8 : 20)
+        .slice(0, budget.formLimit)
         .map((field) => ({
           ...field,
           label: redactString(
-            field.label || '',
+            truncate(field.label, 48),
             {
               rules: trustPolicy.redact,
               field: 'label',
@@ -733,7 +906,7 @@ function createInitialCandidate(
             counters
           ),
           name: redactString(
-            field.name || '',
+            truncate(field.name, 32),
             {
               rules: trustPolicy.redact,
               field: 'name',
@@ -744,7 +917,7 @@ function createInitialCandidate(
           ),
           value: preserveFormValues
             ? redactString(
-                field.value || '',
+                truncate(field.value, 72),
                 {
                   rules: trustPolicy.redact,
                   field: 'value',
@@ -765,11 +938,11 @@ function createInitialCandidate(
       }
       return !shouldDrop;
     })
-    .slice(0, contextPolicy.mode === 'lean' ? 8 : 20)
+    .slice(0, budget.buttonLimit)
     .map((button) => ({
       ...button,
       label: redactString(
-        button.label || '',
+        truncate(button.label, 48),
         {
           rules: trustPolicy.redact,
           field: 'label',
@@ -790,11 +963,11 @@ function createInitialCandidate(
           }
           return !shouldDrop;
         })
-        .slice(0, 4)
+        .slice(0, budget.dialogLimit)
         .map((dialog) => ({
           ...dialog,
           label: redactString(
-            dialog.label || '',
+            truncate(dialog.label, 48),
             {
               rules: trustPolicy.redact,
               field: 'label',
@@ -809,41 +982,68 @@ function createInitialCandidate(
   const candidate: MutableContextCandidate = {
     mapBase: {
       elements,
-      routes: input.map.routes.slice(0, contextPolicy.mode === 'lean' ? 6 : 12),
+      routes: input.map.routes.slice(0, budget.routeLimit),
       currentRoute: input.map.currentRoute,
       currentUrl: input.map.currentUrl,
       routeParams: { ...input.map.routeParams },
-      pageTitle: input.map.pageTitle,
-      headings: input.map.headings.slice(0, contextPolicy.mode === 'lean' ? 3 : 6),
+      pageTitle: truncate(input.map.pageTitle, 72),
+      headings: input.map.headings.slice(0, budget.headingLimit).map((heading) => ({
+        ...heading,
+        text: truncate(heading.text, 72)
+      })),
       navigation,
       formState,
       buttonsState,
-      visibleErrors: input.map.visibleErrors.slice(0, 4),
+      visibleErrors: input.map.visibleErrors.slice(0, 3).map((error) => truncate(error, 72)),
       dialogs,
-      tableRows: includeTablesAndLists ? input.map.tableRows.slice(0, contextPolicy.mode === 'lean' ? 2 : 6) : [],
-      listItems: includeTablesAndLists ? input.map.listItems.slice(0, contextPolicy.mode === 'lean' ? 3 : 8) : [],
-      cards: profile === 'retrieval' && contextPolicy.mode !== 'lean' ? input.map.cards.slice(0, 4) : [],
-      statusBadges: profile === 'retrieval' ? input.map.statusBadges.slice(0, 6) : [],
-      stateHints: contextPolicy.mode === 'full' ? input.map.stateHints.slice(0, 8) : [],
-      activeItems: profile === 'navigation' ? input.map.activeItems.slice(0, 6) : [],
-      countBadges: profile === 'retrieval' ? input.map.countBadges.slice(0, 6) : []
+      tableRows: includeTablesAndLists
+        ? input.map.tableRows.slice(0, budget.tableRowLimit).map((row) => ({
+            context: truncate(row.context, 64),
+            columns: row.columns.slice(0, 4).map((column) => truncate(column, 36))
+          }))
+        : [],
+      listItems: includeTablesAndLists
+        ? input.map.listItems.slice(0, budget.listItemLimit).map((item) => ({
+            context: truncate(item.context, 48),
+            text: truncate(item.text, 64)
+          }))
+        : [],
+      cards: budget.cardLimit
+        ? input.map.cards.slice(0, budget.cardLimit).map((card) => ({
+            title: truncate(card.title, 48),
+            text: truncate(card.text, 72)
+          }))
+        : [],
+      statusBadges: budget.badgeLimit
+        ? input.map.statusBadges.slice(0, budget.badgeLimit).map((badge) => ({
+            text: truncate(badge.text, 32),
+            selector: badge.selector
+          }))
+        : [],
+      stateHints: budget.stateHintLimit
+        ? input.map.stateHints.slice(0, budget.stateHintLimit)
+        : [],
+      activeItems: profile === 'navigation' ? input.map.activeItems.slice(0, 4).map((item) => truncate(item, 48)) : [],
+      countBadges: budget.badgeLimit
+        ? input.map.countBadges.slice(0, budget.badgeLimit).map((badge) => ({
+            text: truncate(badge.text, 32),
+            count: badge.count,
+            selector: badge.selector
+          }))
+        : []
     },
-    appMap: includeAppMap
-      ? filterAndSummarizeAppMap(input.appMap || null, input.map.currentRoute, contextPolicy, trustPolicy, counters)
+    appMap: filterAndSummarizeAppMap(
+      input.appMap || null,
+      input.map.currentRoute,
+      trustPolicy,
+      budget,
+      counters,
+      anchorRoute
+    ),
+    toolCapabilityMap: includeTools
+      ? shapeToolCapabilityMap(input.toolCapabilityMap || null, input.map.currentRoute, budget, profile, input.command, requestKind)
       : null,
-    toolCapabilityMap: includeTools && trustPolicy.features.tools
-      ? shapeToolCapabilityMap(input.toolCapabilityMap || null, input.map.currentRoute, contextPolicy, profile)
-      : null,
-    runtimeContext: buildRuntimeContext(
-      input,
-      runtimeContext,
-      {
-        forms: includeForms,
-        gaze: includeGaze,
-        selectedText: includeSelectedText
-      },
-      trustPolicy
-    )
+    runtimeContext: buildRuntimeContext(input, runtimeContext, budget, trustPolicy)
   };
 
   const includedSections = [
@@ -858,101 +1058,176 @@ function createInitialCandidate(
   ].filter((value): value is string => Boolean(value));
 
   const droppedSections = [
-    includeAppMap ? null : 'appMap',
+    candidate.appMap ? null : 'appMap',
     includeLiveDom ? null : 'liveDom',
     includeDialogs ? null : 'dialogs',
     includeForms ? null : 'forms',
     includeTablesAndLists ? null : 'tablesAndLists',
-    includeGaze ? null : 'gaze',
-    includeSelectedText ? null : 'selectedText',
-    includeTools && trustPolicy.features.tools ? null : 'tools'
+    candidate.runtimeContext?.gazeTarget ? null : 'gaze',
+    candidate.runtimeContext?.selectedText ? null : 'selectedText',
+    candidate.toolCapabilityMap?.tools.length ? null : 'tools'
   ].filter((value): value is string => Boolean(value));
 
+  return { candidate, includedSections, droppedSections, budget };
+}
+
+function buildEstimatedRequest(options: {
+  input: IntentResolutionInput;
+  candidate: MutableContextCandidate;
+  requestKind: ResolverRequestKind;
+}): { systemPrompt: string; userPrompt: string } {
+  const shapedMap = toTransportMap(createCapabilityMap(options.candidate.mapBase));
+  const runtimeState = buildRuntimeStateSnapshot(shapedMap, shapedMap.compressed);
+  const context = buildPromptContext({
+    compressed: shapedMap.compressed,
+    appMap: options.candidate.appMap,
+    runtimeState,
+    toolCapabilityMap: options.candidate.toolCapabilityMap || null,
+    runtimeContext: options.candidate.runtimeContext
+  });
+
+  if (options.requestKind === 'preferred_tool_intent' && options.candidate.toolCapabilityMap?.tools.length) {
+    const preferredToolId = options.candidate.toolCapabilityMap.preferredToolIds[0] || options.candidate.toolCapabilityMap.tools[0]?.id || '';
+    const selectedTool =
+      options.candidate.toolCapabilityMap.tools.find((tool) => tool.id === preferredToolId) ||
+      options.candidate.toolCapabilityMap.tools[0];
+    if (selectedTool) {
+      return {
+        systemPrompt: buildPreferredToolIntentSystemPrompt(),
+        userPrompt: buildPreferredToolIntentUserPrompt({
+          command: options.input.command,
+          context,
+          preferredReason: 'strong semantic match',
+          selectedTool
+        })
+      };
+    }
+  }
+
+  if (options.requestKind === 'new_elements') {
+    return {
+      systemPrompt: buildPlannerSystemPrompt(),
+      userPrompt: buildNewElementsUserPrompt({
+        command: options.input.command,
+        context,
+        completedSteps: options.input.completedSteps || [],
+        newElements: options.input.map.elements.slice(0, 8)
+      })
+    };
+  }
+
+  if (options.requestKind === 'plan') {
+    return {
+      systemPrompt: buildPlannerSystemPrompt(),
+      userPrompt: buildPlannerUserPrompt({
+        command: options.input.command,
+        priority: 'route_then_dom',
+        context
+      })
+    };
+  }
+
   return {
-    candidate,
-    includedSections,
-    droppedSections
+    systemPrompt: buildPlannerSystemPrompt(),
+    userPrompt: buildResolveUserPrompt({
+      command: options.input.command,
+      context,
+      failureContext:
+        options.requestKind === 'failed_step'
+          ? {
+              failedStep: {
+                action: 'click',
+                target: 'target',
+                value: null,
+                waitForDOM: true,
+                reason: 'retry failed step'
+              },
+              failureReason: 'target not found'
+            }
+          : null
+    })
   };
 }
 
-function estimateCandidateTokens(input: IntentResolutionInput, candidate: MutableContextCandidate): number {
-  const payload = {
-    command: input.command,
-    inputMethod: input.inputMethod,
-    map: {
-      ...candidate.mapBase,
-      compressed: null
-    },
-    appMap: candidate.appMap,
-    toolCapabilityMap: candidate.toolCapabilityMap,
-    gazeTarget: input.gazeTarget,
-    gesture: input.gesture,
-    completedSteps: input.completedSteps,
-    runtimeContext: candidate.runtimeContext
-  };
+function estimateCandidateTokens(input: IntentResolutionInput, candidate: MutableContextCandidate, requestKind: ResolverRequestKind): number {
+  const prompt = buildEstimatedRequest({
+    input,
+    candidate,
+    requestKind
+  });
 
-  return estimateTokens(payload);
+  return estimateResolverRequestTokens(prompt);
 }
 
 function applyBudgetWaterfall(
   input: IntentResolutionInput,
   candidate: MutableContextCandidate,
-  contextPolicy: ResolvedExocorContextPolicy
+  budget: ResolverBudgetConfig,
+  requestKind: ResolverRequestKind
 ): boolean {
   let changed = false;
 
-  while (estimateCandidateTokens(input, candidate) > contextPolicy.maxContextTokens) {
-    const before = estimateCandidateTokens(input, candidate);
+  while (estimateCandidateTokens(input, candidate, requestKind) > budget.targetTokens) {
+    const before = estimateCandidateTokens(input, candidate, requestKind);
 
     if (candidate.mapBase.cards.length) {
       candidate.mapBase.cards = [];
     } else if (candidate.mapBase.statusBadges.length) {
       candidate.mapBase.statusBadges = [];
-    } else if (candidate.mapBase.stateHints.length) {
-      candidate.mapBase.stateHints = [];
     } else if (candidate.mapBase.countBadges.length) {
       candidate.mapBase.countBadges = [];
     } else if (candidate.mapBase.activeItems.length) {
       candidate.mapBase.activeItems = [];
+    } else if (candidate.mapBase.stateHints.length) {
+      candidate.mapBase.stateHints = candidate.mapBase.stateHints.slice(0, Math.max(1, candidate.mapBase.stateHints.length - 1));
     } else if (candidate.mapBase.tableRows.length > 1) {
-      candidate.mapBase.tableRows = candidate.mapBase.tableRows.slice(0, Math.max(1, Math.floor(candidate.mapBase.tableRows.length / 2)));
+      candidate.mapBase.tableRows = candidate.mapBase.tableRows.slice(0, candidate.mapBase.tableRows.length - 1);
     } else if (candidate.mapBase.listItems.length > 2) {
-      candidate.mapBase.listItems = candidate.mapBase.listItems.slice(0, Math.max(2, Math.floor(candidate.mapBase.listItems.length / 2)));
+      candidate.mapBase.listItems = candidate.mapBase.listItems.slice(0, candidate.mapBase.listItems.length - 1);
     } else if (candidate.mapBase.formState.some((field) => field.value)) {
       candidate.mapBase.formState = candidate.mapBase.formState.map((field) => ({ ...field, value: '' }));
-    } else if (candidate.mapBase.buttonsState.length > 6) {
-      candidate.mapBase.buttonsState = candidate.mapBase.buttonsState.slice(0, 6);
-    } else if (candidate.mapBase.elements.length > 4 && contextPolicy.sections.liveDom !== 'always') {
-      candidate.mapBase.elements = candidate.mapBase.elements.slice(0, Math.max(4, Math.floor(candidate.mapBase.elements.length / 2)));
-    } else if (candidate.appMap && candidate.appMap.routes.length > 2 && contextPolicy.sections.appMap !== 'always') {
+    } else if (candidate.mapBase.navigation.length > 4) {
+      candidate.mapBase.navigation = candidate.mapBase.navigation.slice(0, candidate.mapBase.navigation.length - 1);
+    } else if (candidate.mapBase.buttonsState.length > 3) {
+      candidate.mapBase.buttonsState = candidate.mapBase.buttonsState.slice(0, candidate.mapBase.buttonsState.length - 1);
+    } else if (candidate.mapBase.elements.length > 4) {
+      candidate.mapBase.elements = candidate.mapBase.elements.slice(0, Math.max(4, candidate.mapBase.elements.length - 2));
+    } else if (candidate.appMap && candidate.appMap.routes.length > 2) {
       candidate.appMap = {
         ...candidate.appMap,
-        routes: candidate.appMap.routes.slice(0, candidate.appMap.routes.length - 1)
+        routes: candidate.appMap.routes.slice(0, candidate.appMap.routes.length - 1),
+        tokenEstimate: Math.ceil(JSON.stringify(candidate.appMap.routes.slice(0, candidate.appMap.routes.length - 1)).length / 4)
       };
-      candidate.appMap.tokenEstimate = estimateTokens(candidate.appMap);
-    } else if (candidate.runtimeContext?.selectedText && contextPolicy.sections.selectedText !== 'always') {
+    } else if (candidate.runtimeContext?.selectedText) {
       delete candidate.runtimeContext.selectedText;
       if (!Object.keys(candidate.runtimeContext).length) {
         candidate.runtimeContext = undefined;
       }
-    } else if (candidate.runtimeContext?.gazeTarget && contextPolicy.sections.gaze !== 'always') {
+    } else if (candidate.runtimeContext?.gazeTarget) {
       delete candidate.runtimeContext.gazeTarget;
       delete candidate.runtimeContext.gazePosition;
-      if (!Object.keys(candidate.runtimeContext || {}).length) {
+      if (candidate.runtimeContext && !Object.keys(candidate.runtimeContext).length) {
         candidate.runtimeContext = undefined;
       }
-    } else if (candidate.toolCapabilityMap && candidate.toolCapabilityMap.tools.length > 3 && contextPolicy.sections.tools !== 'always') {
-      const keepIds = new Set(candidate.toolCapabilityMap.preferredToolIds);
-      const trimmedTools = candidate.toolCapabilityMap.tools.filter((tool, index) => keepIds.has(tool.id) || index < 3);
+    } else if (candidate.toolCapabilityMap && candidate.toolCapabilityMap.tools.length > 1) {
+      const preferredIds = new Set(candidate.toolCapabilityMap.preferredToolIds || []);
+      const trimmedTools = candidate.toolCapabilityMap.tools.filter((tool, index) => preferredIds.has(tool.id) || index === 0);
       candidate.toolCapabilityMap = {
         ...candidate.toolCapabilityMap,
-        tools: trimmedTools
+        tools: trimmedTools,
+        preferredToolIds: candidate.toolCapabilityMap.preferredToolIds.filter((toolId) =>
+          trimmedTools.some((tool) => tool.id === toolId)
+        )
       };
+    } else if (candidate.mapBase.dialogs.length > 1) {
+      candidate.mapBase.dialogs = candidate.mapBase.dialogs.slice(0, 1);
+    } else if (candidate.mapBase.formState.length > 3) {
+      candidate.mapBase.formState = candidate.mapBase.formState.slice(0, candidate.mapBase.formState.length - 1);
     } else {
       break;
     }
 
-    const after = estimateCandidateTokens(input, candidate);
+    const after = estimateCandidateTokens(input, candidate, requestKind);
     if (after >= before) {
       break;
     }
@@ -965,51 +1240,48 @@ function applyBudgetWaterfall(
 export function shapeResolverContext(options: {
   input: IntentResolutionInput;
   runtimeContext?: Record<string, unknown>;
-  contextPolicy: ResolvedExocorContextPolicy;
   trustPolicy: ResolvedExocorTrustPolicy;
+  requestKind?: ResolverRequestKind;
 }): ShapedResolverContext {
-  const { input, runtimeContext, contextPolicy, trustPolicy } = options;
-  const profile = inferContextProfile(input, runtimeContext);
+  const requestKind = options.requestKind || 'plan';
+  const profile = inferContextProfile(options.input, options.runtimeContext);
   const counters = {
     filteredByNeverSend: 0,
     redactedFields: 0
   };
 
-  const { candidate, includedSections, droppedSections } = createInitialCandidate(
-    input,
-    runtimeContext,
-    contextPolicy,
-    trustPolicy,
+  const { candidate, includedSections, droppedSections, budget } = createInitialCandidate(
+    options.input,
+    options.runtimeContext,
+    options.trustPolicy,
+    requestKind,
     profile,
     counters
   );
-  const budgetAdjusted = applyBudgetWaterfall(input, candidate, contextPolicy);
+  const budgetAdjusted = applyBudgetWaterfall(options.input, candidate, budget, requestKind);
   const shapedMap = toTransportMap(createCapabilityMap(candidate.mapBase));
   const shapedInput: IntentResolutionInput = {
-    ...input,
+    ...options.input,
     map: shapedMap,
     appMap: candidate.appMap,
     toolCapabilityMap: candidate.toolCapabilityMap
   };
-  const report: ResolverContextDebugReport = {
-    mode: contextPolicy.mode,
-    profile,
-    maxContextTokens: contextPolicy.maxContextTokens,
-    estimatedTokens: estimateTokens({
-      input: shapedInput,
-      runtimeContext: candidate.runtimeContext
-    }),
-    includedSections,
-    droppedSections,
-    filteredByNeverSend: counters.filteredByNeverSend,
-    redactedFields: counters.redactedFields,
-    budgetAdjusted
-  };
+  const estimatedTokens = estimateCandidateTokens(options.input, candidate, requestKind);
 
   return {
     input: shapedInput,
     runtimeContext: candidate.runtimeContext,
-    report
+    report: {
+      requestKind,
+      profile,
+      targetTokens: budget.targetTokens,
+      estimatedTokens,
+      includedSections,
+      droppedSections,
+      filteredByNeverSend: counters.filteredByNeverSend,
+      redactedFields: counters.redactedFields,
+      budgetAdjusted
+    }
   };
 }
 
@@ -1017,7 +1289,6 @@ export function shapeResolverNewElementsForTransport(options: {
   command: string;
   elements: DOMElementDescriptor[];
   gazeTarget?: string | null;
-  contextPolicy: ResolvedExocorContextPolicy;
   trustPolicy: ResolvedExocorTrustPolicy;
 }): DOMElementDescriptor[] {
   const counters = {
@@ -1025,70 +1296,37 @@ export function shapeResolverNewElementsForTransport(options: {
     redactedFields: 0
   };
 
-  return shapeElements(
-    {
-      command: options.command,
-      inputMethod: 'text',
-      map: createCapabilityMap({
-        elements: options.elements,
-        routes: [],
-        currentRoute: '/',
-        currentUrl: '',
-        routeParams: {},
-        pageTitle: '',
-        headings: [],
-        navigation: [],
-        formState: [],
-        buttonsState: [],
-        visibleErrors: [],
-        dialogs: [],
-        tableRows: [],
-        listItems: [],
-        cards: [],
-        statusBadges: [],
-        stateHints: [],
-        activeItems: [],
-        countBadges: []
-      }),
-      appMap: null,
-      toolCapabilityMap: null,
-      gazeTarget: options.gazeTarget || null,
-      gesture: 'none'
-    },
-    options.trustPolicy,
-    options.contextPolicy,
-    inferContextProfile(
-      {
-        command: options.command,
-        inputMethod: 'text',
-        map: createCapabilityMap({
-          elements: options.elements,
-          routes: [],
-          currentRoute: '/',
-          currentUrl: '',
-          routeParams: {},
-          pageTitle: '',
-          headings: [],
-          navigation: [],
-          formState: [],
-          buttonsState: [],
-          visibleErrors: [],
-          dialogs: [],
-          tableRows: [],
-          listItems: [],
-          cards: [],
-          statusBadges: [],
-          stateHints: [],
-          activeItems: [],
-          countBadges: []
-        }),
-        appMap: null,
-        toolCapabilityMap: null,
-        gazeTarget: options.gazeTarget || null,
-        gesture: 'none'
-      },
-      undefined
-    ),
-    counters
-  );
+  const input: IntentResolutionInput = {
+    command: options.command,
+    inputMethod: 'text',
+    map: createCapabilityMap({
+      elements: options.elements,
+      routes: [],
+      currentRoute: '/',
+      currentUrl: '',
+      routeParams: {},
+      pageTitle: '',
+      headings: [],
+      navigation: [],
+      formState: [],
+      buttonsState: [],
+      visibleErrors: [],
+      dialogs: [],
+      tableRows: [],
+      listItems: [],
+      cards: [],
+      statusBadges: [],
+      stateHints: [],
+      activeItems: [],
+      countBadges: []
+    }),
+    appMap: null,
+    toolCapabilityMap: null,
+    gazeTarget: options.gazeTarget || null,
+    gesture: 'none'
+  };
+  const profile = inferContextProfile(input, undefined);
+  const budget = buildBudgetConfig('new_elements', profile);
+
+  return shapeElements(input, options.trustPolicy, budget, profile, counters);
 }

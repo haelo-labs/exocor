@@ -1,38 +1,12 @@
 import type {
-  ExocorContextMode,
-  ExocorContextPolicy,
   ExocorRedactionField,
   ExocorRedactionRule,
-  ExocorSectionMode,
   ExocorTrustPolicy
 } from '../types';
 
-export const DEFAULT_CONTEXT_MODE: ExocorContextMode = 'full';
-export const DEFAULT_CONTEXT_TOKEN_BUDGETS: Record<ExocorContextMode, number> = {
-  full: 2400,
-  balanced: 1500,
-  lean: 900
-};
-
-const DEFAULT_SECTION_MODE: ExocorSectionMode = 'auto';
 const DEFAULT_REDACTION_REPLACEMENT = '[redacted]';
 
 const REDACTION_FIELDS: ExocorRedactionField[] = ['label', 'text', 'value', 'placeholder', 'ariaLabel', 'name'];
-
-export interface ResolvedExocorContextPolicy {
-  mode: ExocorContextMode;
-  maxContextTokens: number;
-  sections: {
-    appMap: ExocorSectionMode;
-    liveDom: ExocorSectionMode;
-    dialogs: ExocorSectionMode;
-    forms: ExocorSectionMode;
-    tablesAndLists: ExocorSectionMode;
-    gaze: ExocorSectionMode;
-    selectedText: ExocorSectionMode;
-    tools: ExocorSectionMode;
-  };
-}
 
 export interface ResolvedExocorRedactionRule {
   selector: string;
@@ -62,10 +36,6 @@ function normalizeSelectorList(selectors: string[] | undefined): string[] {
   return selectors.map((selector) => selector.trim()).filter(Boolean);
 }
 
-function normalizeSectionMode(value: ExocorSectionMode | undefined): ExocorSectionMode {
-  return value === 'always' || value === 'never' || value === 'auto' ? value : DEFAULT_SECTION_MODE;
-}
-
 function normalizeRedactionFields(fields: ExocorRedactionField[] | undefined): ExocorRedactionField[] {
   if (!Array.isArray(fields) || !fields.length) {
     return REDACTION_FIELDS;
@@ -73,32 +43,6 @@ function normalizeRedactionFields(fields: ExocorRedactionField[] | undefined): E
 
   return fields.filter((field, index) => REDACTION_FIELDS.includes(field) && fields.indexOf(field) === index);
 }
-
-export function resolveContextPolicy(policy: ExocorContextPolicy | undefined): ResolvedExocorContextPolicy {
-  const mode = policy?.mode === 'balanced' || policy?.mode === 'lean' || policy?.mode === 'full'
-    ? policy.mode
-    : DEFAULT_CONTEXT_MODE;
-  const maxContextTokens =
-    typeof policy?.maxContextTokens === 'number' && Number.isFinite(policy.maxContextTokens) && policy.maxContextTokens > 0
-      ? Math.round(policy.maxContextTokens)
-      : DEFAULT_CONTEXT_TOKEN_BUDGETS[mode];
-
-  return {
-    mode,
-    maxContextTokens,
-    sections: {
-      appMap: normalizeSectionMode(policy?.sections?.appMap),
-      liveDom: normalizeSectionMode(policy?.sections?.liveDom),
-      dialogs: normalizeSectionMode(policy?.sections?.dialogs),
-      forms: normalizeSectionMode(policy?.sections?.forms),
-      tablesAndLists: normalizeSectionMode(policy?.sections?.tablesAndLists),
-      gaze: normalizeSectionMode(policy?.sections?.gaze),
-      selectedText: normalizeSectionMode(policy?.sections?.selectedText),
-      tools: normalizeSectionMode(policy?.sections?.tools)
-    }
-  };
-}
-
 export function resolveTrustPolicy(policy: ExocorTrustPolicy | undefined): ResolvedExocorTrustPolicy {
   return {
     features: {
@@ -127,7 +71,7 @@ function normalizeRedactionRule(rule: ExocorRedactionRule | undefined): Resolved
 
   return {
     selector,
-    fields: normalizeRedactionFields(rule.fields),
+    fields: normalizeRedactionFields(rule?.fields),
     replace: rule?.replace?.trim() || DEFAULT_REDACTION_REPLACEMENT
   };
 }
