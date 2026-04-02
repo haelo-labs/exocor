@@ -35,7 +35,7 @@
 - If a tool is ambiguous, missing required arguments, or cannot safely cover the task, Exocor falls back to clarification, planner-led app-map execution, and DOM execution as needed.
 
 ## SDK UI
-- Renders chat, toasts, learning overlay, voice transcript, gaze overlay, and floating clarification UI.
+- Renders chat, toasts, discovery overlay, voice transcript, gaze overlay, and clarification prompt UI.
 - Lets the user stop an active resolve or execute run from the chat panel without changing already-completed host actions.
 - Uses a shadow root so host CSS does not restyle the SDK.
 - Excludes SDK UI from DOM scanning and app-map discovery.

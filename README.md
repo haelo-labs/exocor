@@ -29,7 +29,7 @@ That means tools are additive, not a replacement for discovery. Exocor can learn
 - provider-level explicit tools with route affinity, safety metadata, and argument schemas
 - streamed planning with clarification, stale-map refresh, and dynamic follow-up steps
 - authoritative execution for a uniquely strong preferred tool when Exocor can use it safely
-- refreshed SDK UI with command history, floating clarification, transcript, toasts, and cooperative stop
+- refreshed SDK UI with command history, clarification prompt, transcript, toasts, and cooperative stop
 - server helpers for the resolver endpoint and the local development relay
 
 ## Install
