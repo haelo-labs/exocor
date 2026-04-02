@@ -1407,10 +1407,10 @@ describe('SpatialProvider integration', () => {
 
     expect(discoverSpy).toHaveBeenCalledTimes(1);
     expect(logSpy).toHaveBeenCalledWith('[Exocor Discovery] mount bootstrap reason:', 'no_cache');
-    expect(sdkQueries().getByText(/Learning your app/)).toBeTruthy();
+    expect(sdkQueries().getByText(/Analyzing app structure/)).toBeTruthy();
 
     await advance(600);
-    expect(sdkQueries().queryByText(/Learning your app/)).toBeNull();
+    expect(sdkQueries().queryByText(/Analyzing app structure/)).toBeNull();
   });
 
   it('uses scoped cached app map on mount without rerunning discovery', async () => {
@@ -1437,7 +1437,7 @@ describe('SpatialProvider integration', () => {
     });
 
     expect(discoverSpy).not.toHaveBeenCalled();
-    expect(sdkQueries().queryByText(/Learning your app/)).toBeNull();
+    expect(sdkQueries().queryByText(/Analyzing app structure/)).toBeNull();
   });
 
   it('skips app-map discovery when disabled and uses the local fallback map', async () => {
@@ -1463,7 +1463,7 @@ describe('SpatialProvider integration', () => {
     });
 
     expect(discoverSpy).not.toHaveBeenCalled();
-    expect(sdkQueries().queryByText(/Learning your app/)).toBeNull();
+    expect(sdkQueries().queryByText(/Analyzing app structure/)).toBeNull();
     expect(onAppMapped).toHaveBeenCalled();
     expect(onAppMapped.mock.calls.at(-1)?.[0]).toMatchObject({
       routeCount: 1
@@ -2669,7 +2669,7 @@ describe('SpatialProvider integration', () => {
     });
 
     expect(discoverSpy).not.toHaveBeenCalled();
-    expect(sdkQueries().queryByText(/Learning your app/)).toBeNull();
+    expect(sdkQueries().queryByText(/Analyzing app structure/)).toBeNull();
 
     await act(async () => {
       fireEvent.click(sdkQueries().getByLabelText('Open Exocor command panel'));
