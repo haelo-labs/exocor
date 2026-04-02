@@ -141,6 +141,11 @@ export function usePointerInteractionRuntime({
   );
 
   const pointerTracker = useFaceNoseCursor(pointerTrackerOptions);
+  const pointerTrackerRef = useRef(pointerTracker);
+
+  useEffect(() => {
+    pointerTrackerRef.current = pointerTracker;
+  }, [pointerTracker]);
 
   useEffect(() => {
     if (activeModalities.gaze) {
@@ -168,17 +173,18 @@ export function usePointerInteractionRuntime({
 
   useEffect(() => {
     const needsPointerTracking = activeModalities.gaze || activeModalities.gesture;
+    const controller = pointerTrackerRef.current;
     if (!needsPointerTracking) {
-      pointerTracker.stopTracking();
+      controller.stopTracking();
       return;
     }
 
-    void pointerTracker.startTracking();
+    void controller.startTracking();
 
     return () => {
-      pointerTracker.stopTracking();
+      controller.stopTracking();
     };
-  }, [activeModalities.gaze, activeModalities.gesture, pointerTracker]);
+  }, [activeModalities.gaze, activeModalities.gesture]);
 
   return {
     gaze,

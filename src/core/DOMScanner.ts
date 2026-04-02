@@ -1395,7 +1395,7 @@ export function getScopedAppMapStorageKeys(scope: AppCacheScope = resolveCurrent
   };
 }
 
-async function waitForDiscoveryBootstrapSnapshot(): Promise<{
+async function waitForDiscoveryBootstrapSnapshot(signal?: AbortSignal): Promise<{
   snapshot: RouterSnapshot;
   outcome: 'ready' | 'timeout';
   checks: number;
@@ -1407,6 +1407,7 @@ async function waitForDiscoveryBootstrapSnapshot(): Promise<{
   let lastSnapshot = discoverRouterSnapshot();
 
   while (Date.now() - startedAt <= DISCOVERY_BOOTSTRAP_TIMEOUT_MS) {
+    throwIfDiscoveryAborted(signal);
     checks += 1;
     const snapshot = discoverRouterSnapshot();
     lastSnapshot = snapshot;
@@ -1426,7 +1427,7 @@ async function waitForDiscoveryBootstrapSnapshot(): Promise<{
       return { snapshot, outcome: 'ready', checks };
     }
 
-    await sleep(DISCOVERY_BOOTSTRAP_POLL_MS);
+    await sleep(DISCOVERY_BOOTSTRAP_POLL_MS, signal);
   }
 
   return {
@@ -1838,9 +1839,47 @@ export function scanDOM(policy?: DOMScannerPolicy): DOMCapabilityMap {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
+function createDiscoveryAbortError(): DOMException {
+  return new DOMException('Discovery aborted.', 'AbortError');
+}
+
+function isDiscoveryAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
+function throwIfDiscoveryAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createDiscoveryAbortError();
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  if (signal.aborted) {
+    return Promise.reject(createDiscoveryAbortError());
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = (): void => {
+      window.clearTimeout(timeoutId);
+      signal.removeEventListener('abort', onAbort);
+      reject(createDiscoveryAbortError());
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -3049,7 +3088,8 @@ function canClickDuringDiscovery(element: HTMLElement, label: string): boolean {
   return true;
 }
 
-async function closeDiscoveredModal(): Promise<void> {
+async function closeDiscoveredModal(signal?: AbortSignal): Promise<void> {
+  throwIfDiscoveryAborted(signal);
   const openContainers = findOpenModalContainers();
   if (!openContainers.length) {
     return;
@@ -3090,12 +3130,13 @@ async function closeDiscoveredModal(): Promise<void> {
   if (!closed) {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   }
-  await sleep(DISCOVERY_MODAL_CLOSE_WAIT_MS);
+  await sleep(DISCOVERY_MODAL_CLOSE_WAIT_MS, signal);
 }
 
-async function scanModalTriggersActive(accumulator: RouteScanAccumulator): Promise<void> {
+async function scanModalTriggersActive(accumulator: RouteScanAccumulator, signal?: AbortSignal): Promise<void> {
   const triggerCandidates = discoverModalTriggerCandidates();
   for (const trigger of triggerCandidates) {
+    throwIfDiscoveryAborted(signal);
     mergeModalTriggerResult(accumulator, trigger, { formFields: [], buttons: [] });
     if (!canClickDuringDiscovery(trigger.element, trigger.label)) {
       continue;
@@ -3103,7 +3144,7 @@ async function scanModalTriggersActive(accumulator: RouteScanAccumulator): Promi
 
     const beforeKeys = new Set(findOpenModalContainers().map((container) => modalContainerKey(container)));
     trigger.element.click();
-    await sleep(DISCOVERY_TRIGGER_WAIT_MS);
+    await sleep(DISCOVERY_TRIGGER_WAIT_MS, signal);
 
     const openedContainers = findOpenModalContainers();
     const newContainers = openedContainers.filter((container) => !beforeKeys.has(modalContainerKey(container)));
@@ -3112,28 +3153,30 @@ async function scanModalTriggersActive(accumulator: RouteScanAccumulator): Promi
     mergeModalTriggerResult(accumulator, trigger, modalContents);
 
     mergeStaticRouteScan(accumulator);
-    await closeDiscoveredModal();
+    await closeDiscoveredModal(signal);
     mergeStaticRouteScan(accumulator);
   }
 }
 
-async function scanTabsActive(accumulator: RouteScanAccumulator): Promise<void> {
+async function scanTabsActive(accumulator: RouteScanAccumulator, signal?: AbortSignal): Promise<void> {
   const tabCandidates = discoverTabCandidates();
   for (const tab of tabCandidates) {
+    throwIfDiscoveryAborted(signal);
     if (!canClickDuringDiscovery(tab.element, tab.label)) {
       continue;
     }
     tab.element.click();
-    await sleep(DISCOVERY_TAB_WAIT_MS);
+    await sleep(DISCOVERY_TAB_WAIT_MS, signal);
     mergeStaticRouteScan(accumulator);
   }
 }
 
-async function scanRouteMap(path: string, componentName: string): Promise<RouteMap> {
+async function scanRouteMap(path: string, componentName: string, signal?: AbortSignal): Promise<RouteMap> {
+  throwIfDiscoveryAborted(signal);
   const accumulator = createRouteScanAccumulator(path, componentName);
   mergeStaticRouteScan(accumulator);
-  await scanModalTriggersActive(accumulator);
-  await scanTabsActive(accumulator);
+  await scanModalTriggersActive(accumulator, signal);
+  await scanTabsActive(accumulator, signal);
   mergeStaticRouteScan(accumulator);
 
   return {
@@ -3151,22 +3194,24 @@ async function scanRouteMap(path: string, componentName: string): Promise<RouteM
   };
 }
 
-async function waitForDiscoveryPathMatch(expectedPath: string): Promise<boolean> {
+async function waitForDiscoveryPathMatch(expectedPath: string, signal?: AbortSignal): Promise<boolean> {
   const normalizedExpected = normalizeDiscoveryPath(expectedPath);
   const startedAt = Date.now();
 
   while (Date.now() - startedAt <= DISCOVERY_NAVIGATION_TIMEOUT_MS) {
+    throwIfDiscoveryAborted(signal);
     if (normalizeDiscoveryPath(window.location.pathname) === normalizedExpected) {
-      await sleep(DISCOVERY_SETTLE_WAIT_MS);
+      await sleep(DISCOVERY_SETTLE_WAIT_MS, signal);
       return true;
     }
-    await sleep(DISCOVERY_NAVIGATION_POLL_MS);
+    await sleep(DISCOVERY_NAVIGATION_POLL_MS, signal);
   }
 
   return false;
 }
 
-async function navigateForDiscovery(targetPath: string, navigate?: NavigateFn | null): Promise<boolean> {
+async function navigateForDiscovery(targetPath: string, navigate?: NavigateFn | null, signal?: AbortSignal): Promise<boolean> {
+  throwIfDiscoveryAborted(signal);
   const expectedPath = normalizePath(targetPath);
   const currentPath = normalizeDiscoveryPath(window.location.pathname);
   const expectedDiscoveryPath = normalizeDiscoveryPath(expectedPath);
@@ -3177,7 +3222,7 @@ async function navigateForDiscovery(targetPath: string, navigate?: NavigateFn | 
   if (navigate) {
     try {
       await navigate(expectedPath);
-      const navigated = await waitForDiscoveryPathMatch(expectedPath);
+      const navigated = await waitForDiscoveryPathMatch(expectedPath, signal);
       if (navigated) {
         return true;
       }
@@ -3194,11 +3239,11 @@ async function navigateForDiscovery(targetPath: string, navigate?: NavigateFn | 
   }
 
   if (normalizeDiscoveryPath(window.location.pathname) === expectedDiscoveryPath) {
-    await sleep(DISCOVERY_SETTLE_WAIT_MS);
+    await sleep(DISCOVERY_SETTLE_WAIT_MS, signal);
     return true;
   }
 
-  return waitForDiscoveryPathMatch(expectedPath);
+  return waitForDiscoveryPathMatch(expectedPath, signal);
 }
 
 function sanitizeAppMap(value: unknown): AppMap | null {
@@ -3658,18 +3703,10 @@ export function getRouterNavigateFromFiber(policy?: DOMScannerPolicy): ((path: s
   return discoverRouterSnapshot().navigate;
 }
 
-export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap> {
+export async function discoverAppMap(policy?: DOMScannerPolicy, signal?: AbortSignal): Promise<AppMap> {
   return withDOMScannerPolicy(policy, async () => {
-    const readiness = await waitForDiscoveryBootstrapSnapshot();
+    const readiness = await waitForDiscoveryBootstrapSnapshot(signal);
     const snapshot = readiness.snapshot;
-    // eslint-disable-next-line no-console
-    console.log('[Exocor Discovery] readiness:', readiness.outcome, {
-      checks: readiness.checks,
-      routes: snapshot.routes.length,
-      hasNavigate: Boolean(snapshot.navigate)
-    });
-    // eslint-disable-next-line no-console
-    console.log('[Exocor Discovery] snapshot:', snapshot);
     const originRoute = normalizePath(snapshot.currentRoute || window.location.pathname);
     const routes = (snapshot?.routes || []).filter((route): route is RouteDefinition => Boolean(route));
     const discoveredRoutes: RouteMap[] = [];
@@ -3695,8 +3732,6 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
         componentName: route?.componentName || 'UnknownRoute'
       });
       queuedPaths.add(normalizedPath);
-      // eslint-disable-next-line no-console
-      console.log('[Exocor Discovery] route enqueue:', normalizedPath, 'source:', source);
     };
 
     for (const route of routes) {
@@ -3706,10 +3741,8 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
       enqueueRoute({ path: originRoute, navigatePath: originRoute, componentName: 'UnknownRoute' }, 'snapshot');
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[Exocor Discovery] routes to scan:', routeQueue.length, routeQueue);
-
     while (routeQueue.length && discoveredRoutes.length < DISCOVERY_MAX_ROUTES) {
+      throwIfDiscoveryAborted(signal);
       const route = routeQueue.shift() as RouteDefinition;
       const normalizedRoutePath = normalizePath(route.path || originRoute);
       queuedPaths.delete(normalizedRoutePath);
@@ -3725,9 +3758,7 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
 
       try {
         const targetPath = toNavigablePath(route?.navigatePath || route?.path || originRoute);
-        const navigated = await navigateForDiscovery(targetPath, discoveryNavigate);
-        // eslint-disable-next-line no-console
-        console.log('[Exocor Discovery] navigated:', navigated, 'to:', targetPath);
+        const navigated = await navigateForDiscovery(targetPath, discoveryNavigate, signal);
         if (!navigated) {
           continue;
         }
@@ -3745,7 +3776,7 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
             ? matchedRoute.componentName
             : route?.componentName || 'UnknownRoute';
 
-        const scannedRoute = await scanRouteMap(normalizedRoutePath, componentName);
+        const scannedRoute = await scanRouteMap(normalizedRoutePath, componentName, signal);
         discoveredRoutes.push(scannedRoute);
 
         for (const navLink of scannedRoute.navigationLinks || []) {
@@ -3759,15 +3790,21 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
             'navigation_link'
           );
         }
-      } catch {
+      } catch (error) {
+        if (isDiscoveryAbortError(error)) {
+          throw error;
+        }
         continue;
       }
     }
 
     if (!discoveredRoutes.length) {
       try {
-        discoveredRoutes.push(await scanRouteMap(originRoute, 'UnknownRoute'));
-      } catch {
+        discoveredRoutes.push(await scanRouteMap(originRoute, 'UnknownRoute', signal));
+      } catch (error) {
+        if (isDiscoveryAbortError(error)) {
+          throw error;
+        }
         discoveredRoutes.push({
           path: originRoute,
           componentName: 'UnknownRoute',
@@ -3787,9 +3824,12 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
       const currentRoute = normalizeDiscoveryPath(window.location.pathname);
       if (currentRoute !== normalizeDiscoveryPath(originRoute)) {
         const restoreSnapshot = discoverRouterSnapshot();
-        await navigateForDiscovery(originRoute, restoreSnapshot.navigate || discoveryNavigate);
+        await navigateForDiscovery(originRoute, restoreSnapshot.navigate || discoveryNavigate, signal);
       }
-    } catch {
+    } catch (error) {
+      if (isDiscoveryAbortError(error)) {
+        throw error;
+      }
       // Ignore navigation restore errors and still cache the discovered subset.
     }
 
@@ -3800,10 +3840,6 @@ export async function discoverAppMap(policy?: DOMScannerPolicy): Promise<AppMap>
       routes: discoveredRoutes
     };
 
-    // eslint-disable-next-line no-console
-    console.log('[Exocor Discovery] saving map with routes:', discoveredRoutes.length);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor Discovery] map ready:', appMap.routes.length, 'routes', appMap.routes.map((r) => r.path));
     saveAppMapToCache(appMap);
     return appMap;
   });

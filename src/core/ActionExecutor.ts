@@ -44,6 +44,7 @@ interface ResolutionContext {
   aliasSelectorMap: Record<string, string>;
   aliasLocatorKindMap: Record<string, AppMapLocatorKind>;
   appMapSelectorIndex: AppMapRouteSelectorIndex[];
+  debug: boolean;
 }
 
 interface AppMapRouteSelectorIndex {
@@ -1005,21 +1006,25 @@ function resolveTargetElement(
     return null;
   }
 
-  // eslint-disable-next-line no-console
-  console.log('[Exocor][Executor] selector map snapshot', {
-    ...context.liveSelectorMap,
-    ...context.aliasSelectorMap
-  });
-  // eslint-disable-next-line no-console
-  console.log('[Exocor][Executor] requested target id', target);
+  if (context.debug) {
+    // eslint-disable-next-line no-console
+    console.log('[Exocor][Executor] selector map snapshot', {
+      ...context.liveSelectorMap,
+      ...context.aliasSelectorMap
+    });
+    // eslint-disable-next-line no-console
+    console.log('[Exocor][Executor] requested target id', target);
+  }
 
   const mappedSelector = context.aliasSelectorMap[target] || context.liveSelectorMap[target];
   if (mappedSelector) {
     const mappedElement = queryCandidate(mappedSelector);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Selector for', step.target, ':', mappedSelector, 'found:', !!mappedElement);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor][Executor] selector lookup', mappedSelector, 'found:', Boolean(mappedElement));
+    if (context.debug) {
+      // eslint-disable-next-line no-console
+      console.log('[Exocor] Selector for', step.target, ':', mappedSelector, 'found:', !!mappedElement);
+      // eslint-disable-next-line no-console
+      console.log('[Exocor][Executor] selector lookup', mappedSelector, 'found:', Boolean(mappedElement));
+    }
     if (mappedElement) {
       return {
         element: mappedElement,
@@ -1035,21 +1040,25 @@ function resolveTargetElement(
     for (const locator of appMapLocators) {
       const resolved = resolveLocatorCandidate(locator, step);
       const selector = resolved?.selector || locator.selectorCandidates?.[0] || '';
-      // eslint-disable-next-line no-console
-      console.log('[Exocor][Executor] app-map selector lookup', selector, 'found:', Boolean(resolved?.element));
+      if (context.debug) {
+        // eslint-disable-next-line no-console
+        console.log('[Exocor][Executor] app-map selector lookup', selector, 'found:', Boolean(resolved?.element));
+      }
       if (!resolved) {
         continue;
       }
 
       context.aliasSelectorMap[target] = resolved.selector;
       context.aliasLocatorKindMap[target] = locator.kind;
-      // eslint-disable-next-line no-console
-      console.log('[Exocor][Executor] app-map remap', {
-        targetLabel: target,
-        selector: resolved.selector,
-        kind: locator.kind,
-        route: map.currentRoute
-      });
+      if (context.debug) {
+        // eslint-disable-next-line no-console
+        console.log('[Exocor][Executor] app-map remap', {
+          targetLabel: target,
+          selector: resolved.selector,
+          kind: locator.kind,
+          route: map.currentRoute
+        });
+      }
       return {
         element: resolved.element,
         selector: resolved.selector,
@@ -1062,10 +1071,12 @@ function resolveTargetElement(
   const candidates = splitSelectorList(target);
   for (const candidate of candidates) {
     const candidateElement = queryCandidate(candidate);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Selector for', step.target, ':', candidate, 'found:', !!candidateElement);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor][Executor] direct selector lookup', candidate, 'found:', Boolean(candidateElement));
+    if (context.debug) {
+      // eslint-disable-next-line no-console
+      console.log('[Exocor] Selector for', step.target, ':', candidate, 'found:', !!candidateElement);
+      // eslint-disable-next-line no-console
+      console.log('[Exocor][Executor] direct selector lookup', candidate, 'found:', Boolean(candidateElement));
+    }
     if (candidateElement) {
       return {
         element: candidateElement,
@@ -1079,12 +1090,14 @@ function resolveTargetElement(
     const labelMatched = findLabelTarget(step, target, map);
     if (labelMatched) {
       context.aliasSelectorMap[target] = labelMatched.selector;
-      // eslint-disable-next-line no-console
-      console.log('[Exocor][Executor] label remap', {
-        targetLabel: target,
-        selector: labelMatched.selector,
-        action: step.action
-      });
+      if (context.debug) {
+        // eslint-disable-next-line no-console
+        console.log('[Exocor][Executor] label remap', {
+          targetLabel: target,
+          selector: labelMatched.selector,
+          action: step.action
+        });
+      }
       return {
         element: labelMatched.element,
         selector: labelMatched.selector,
@@ -1097,15 +1110,17 @@ function resolveTargetElement(
     const semantic = findSemanticTarget(step, map);
     if (semantic) {
       context.aliasSelectorMap[target] = semantic.selector;
-      // eslint-disable-next-line no-console
-      console.log('[Exocor] Selector for', step.target, ':', semantic.selector, 'found:', true);
-      // eslint-disable-next-line no-console
-      console.log('[Exocor][Executor] semantic remap', {
-        targetId: target,
-        selector: semantic.selector,
-        reason: step.reason,
-        value: step.value ?? null
-      });
+      if (context.debug) {
+        // eslint-disable-next-line no-console
+        console.log('[Exocor] Selector for', step.target, ':', semantic.selector, 'found:', true);
+        // eslint-disable-next-line no-console
+        console.log('[Exocor][Executor] semantic remap', {
+          targetId: target,
+          selector: semantic.selector,
+          reason: step.reason,
+          value: step.value ?? null
+        });
+      }
       return {
         element: semantic.element,
         selector: semantic.selector,
@@ -1114,10 +1129,12 @@ function resolveTargetElement(
     }
   }
 
-  // eslint-disable-next-line no-console
-  console.log('[Exocor] Selector for', step.target, ':', null, 'found:', false);
-  // eslint-disable-next-line no-console
-  console.log('[Exocor][Executor] resolution failed for target id', target);
+  if (context.debug) {
+    // eslint-disable-next-line no-console
+    console.log('[Exocor] Selector for', step.target, ':', null, 'found:', false);
+    // eslint-disable-next-line no-console
+    console.log('[Exocor][Executor] resolution failed for target id', target);
+  }
   return null;
 }
 
@@ -1744,7 +1761,8 @@ export class ActionExecutor {
       liveSelectorMap: { ...map.compressed.selectorMap },
       aliasSelectorMap: {},
       aliasLocatorKindMap: {},
-      appMapSelectorIndex: buildAppMapSelectorIndex(options.appMap)
+      appMapSelectorIndex: buildAppMapSelectorIndex(options.appMap),
+      debug: this.debug
     };
 
     const newElementsBySelector = new Map<string, DOMElementDescriptor>();
@@ -1934,9 +1952,9 @@ export class ActionExecutor {
     resolutionPolicy: ResolutionPolicy
   ): Promise<StepResult> {
     throwIfAborted(options.signal);
-    // eslint-disable-next-line no-console
-    console.log('[Exocor] Executing step:', JSON.stringify(step));
     if (this.debug) {
+      // eslint-disable-next-line no-console
+      console.log('[Exocor] Executing step:', JSON.stringify(step));
       // eslint-disable-next-line no-console
       console.log('[Exocor] Step:', step);
     }
@@ -2018,8 +2036,10 @@ export class ActionExecutor {
         const fillAttempt = fillInput(element, step.value);
         if (!fillAttempt) {
           const details = describeElementForFill(element);
-          // eslint-disable-next-line no-console
-          console.log('[Exocor][Executor] fill failed - no fillable descendant', details);
+          if (this.debug) {
+            // eslint-disable-next-line no-console
+            console.log('[Exocor][Executor] fill failed - no fillable descendant', details);
+          }
           return {
             executed: false,
             reason: `Fill target not editable (${details})`
@@ -2028,8 +2048,10 @@ export class ActionExecutor {
 
         if (!fillAttempt.filled) {
           const details = describeElementForFill(fillAttempt.usedElement as HTMLElement);
-          // eslint-disable-next-line no-console
-          console.log('[Exocor][Executor] fill failed - unsupported target', details);
+          if (this.debug) {
+            // eslint-disable-next-line no-console
+            console.log('[Exocor][Executor] fill failed - unsupported target', details);
+          }
           return {
             executed: false,
             reason: fillAttempt.reason || `Fill target not editable (${details})`
@@ -2038,12 +2060,14 @@ export class ActionExecutor {
 
         const valueChanged = fillAttempt.beforeValue !== fillAttempt.afterValue;
 
-        // eslint-disable-next-line no-console
-        console.log('[Exocor][Executor] fill value changed', valueChanged, {
-          beforeValue: fillAttempt.beforeValue,
-          afterValue: fillAttempt.afterValue,
-          target: describeElementForFill(fillAttempt.usedElement as HTMLElement)
-        });
+        if (this.debug) {
+          // eslint-disable-next-line no-console
+          console.log('[Exocor][Executor] fill value changed', valueChanged, {
+            beforeValue: fillAttempt.beforeValue,
+            afterValue: fillAttempt.afterValue,
+            target: describeElementForFill(fillAttempt.usedElement as HTMLElement)
+          });
+        }
         return { executed: true, valueChanged, settleMode: fillSettleMode(step, fillAttempt.usedElement) };
       }
       case 'navigate': {

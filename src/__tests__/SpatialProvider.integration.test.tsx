@@ -1413,6 +1413,48 @@ describe('SpatialProvider integration', () => {
     expect(sdkQueries().queryByText(/Analyzing app structure/)).toBeNull();
   });
 
+  it('aborts mount-started discovery and removes SDK UI on unmount', async () => {
+    const discoverySignals: AbortSignal[] = [];
+    vi.spyOn(DOMScannerModule, 'discoverAppMap').mockImplementation((_policy, signal) => {
+      if (signal) {
+        discoverySignals.push(signal);
+      }
+
+      return new Promise((resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => {
+            reject(new DOMException('Discovery aborted.', 'AbortError'));
+          },
+          { once: true }
+        );
+        window.setTimeout(() => {
+          resolve(discoveredMapFixture());
+        }, 500);
+      });
+    });
+
+    const { unmount } = render(
+      <SpatialProvider modalities={[]}>
+        <HostOpsFieldMock />
+      </SpatialProvider>
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(discoverySignals).toHaveLength(1);
+    expect(discoverySignals[0]?.aborted).toBe(false);
+
+    await act(async () => {
+      unmount();
+    });
+
+    expect(discoverySignals[0]?.aborted).toBe(true);
+    expect(screen.queryByTestId('exocor-sdk-root')).toBeNull();
+  });
+
   it('uses scoped cached app map on mount without rerunning discovery', async () => {
     seedScopedAppMapCache(discoveredMapFixture());
     const discoverSpy = vi
@@ -1498,6 +1540,8 @@ describe('SpatialProvider integration', () => {
 
     expect(discoverSpy).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem(keys.appMap)).toBeNull();
+
+    await advance(600);
   });
 
   it('waits for mount-started discovery and does not start discovery from command execution', async () => {

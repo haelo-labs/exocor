@@ -32,12 +32,18 @@ export function useVoiceCommandRuntime({
 }: UseVoiceCommandRuntimeOptions): VoiceCommandRuntime {
   const [voice, setVoice] = useState<VoiceState>({ transcript: '', isListening: false, confidence: 0 });
   const [isAudioCapturing, setIsAudioCapturing] = useState(false);
+  const voiceAvailable = availableModalities.includes('voice');
 
   const speechControllerRef = useRef<SpeechController | null>(null);
   const silenceTimerRef = useRef<number | null>(null);
   const audioCaptureTimerRef = useRef<number | null>(null);
   const lastVoiceSubmissionRef = useRef('');
   const voiceGazeSnapshotRef = useRef<VoiceGazeSnapshot | null>(null);
+  const executeCommandRef = useRef(executeCommand);
+
+  useEffect(() => {
+    executeCommandRef.current = executeCommand;
+  }, [executeCommand]);
 
   const clearSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) {
@@ -111,30 +117,33 @@ export function useVoiceCommandRuntime({
       lastVoiceSubmissionRef.current = normalized;
       clearVoiceTranscript();
       speechControllerRef.current?.restart();
-      const pendingExecution = executeCommand(normalized, 'voice', gazeSnapshot);
+      const pendingExecution = executeCommandRef.current(normalized, 'voice', gazeSnapshot);
       void pendingExecution.then((accepted) => {
         if (!accepted && lastVoiceSubmissionRef.current === normalized) {
           lastVoiceSubmissionRef.current = '';
         }
       });
     },
-    [clearSilenceTimer, clearVoiceTranscript, executeCommand, resetVoiceGazeSnapshot]
+    [clearSilenceTimer, clearVoiceTranscript, resetVoiceGazeSnapshot]
   );
 
   useEffect(() => {
-    if (!availableModalities.includes('voice')) {
+    if (!voiceAvailable) {
       speechControllerRef.current?.destroy();
       speechControllerRef.current = null;
       resetVoiceUtteranceState();
       clearVoiceTranscript();
       lastVoiceSubmissionRef.current = '';
       resetVoiceCaptureState();
-      setVoice((previous) => ({
-        ...previous,
-        transcript: '',
-        isListening: false,
-        confidence: 0
-      }));
+      setVoice((previous) =>
+        !previous.transcript && !previous.isListening && previous.confidence === 0
+          ? previous
+          : {
+              transcript: '',
+              isListening: false,
+              confidence: 0
+            }
+      );
       return;
     }
 
@@ -214,12 +223,11 @@ export function useVoiceCommandRuntime({
       speechControllerRef.current = null;
     };
   }, [
-    availableModalities,
     captureVoiceGazeSnapshot,
     clearAudioCaptureTimer,
     clearSilenceTimer,
     clearVoiceTranscript,
-    executeCommand,
+    voiceAvailable,
     isMicrophoneEnabledRef,
     resetVoiceCaptureState,
     resetVoiceUtteranceState,
@@ -227,7 +235,7 @@ export function useVoiceCommandRuntime({
   ]);
 
   useEffect(() => {
-    if (!availableModalities.includes('voice')) {
+    if (!voiceAvailable) {
       return;
     }
 
@@ -246,13 +254,16 @@ export function useVoiceCommandRuntime({
     resetVoiceCaptureState();
     clearVoiceTranscript();
     lastVoiceSubmissionRef.current = '';
-    setVoice((previous) => ({
-      ...previous,
-      transcript: '',
-      isListening: false,
-      confidence: 0
-    }));
-  }, [availableModalities, clearVoiceTranscript, isMicrophoneEnabled, resetVoiceCaptureState, resetVoiceUtteranceState]);
+    setVoice((previous) =>
+      !previous.transcript && !previous.isListening && previous.confidence === 0
+        ? previous
+        : {
+            transcript: '',
+            isListening: false,
+            confidence: 0
+          }
+    );
+  }, [clearVoiceTranscript, isMicrophoneEnabled, resetVoiceCaptureState, resetVoiceUtteranceState, voiceAvailable]);
 
   useEffect(() => {
     return () => {

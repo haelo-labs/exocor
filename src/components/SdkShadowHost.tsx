@@ -41,6 +41,14 @@ export function SdkShadowHost({ children }: SdkShadowHostProps): JSX.Element {
     }
 
     setPortalContainer(portalContainerRef.current);
+
+    return () => {
+      const container = portalContainerRef.current;
+      if (container?.isConnected) {
+        container.remove();
+      }
+      portalContainerRef.current = null;
+    };
   }, []);
 
   return (

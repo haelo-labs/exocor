@@ -44,12 +44,16 @@ export function useAppMapRuntime({
   const [isDiscovering, setIsDiscovering] = useState(false);
   const appMapRef = useRef<AppMap | null>(null);
   const discoveryPromiseRef = useRef<Promise<AppMap | null> | null>(null);
+  const discoveryAbortControllerRef = useRef<AbortController | null>(null);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      discoveryAbortControllerRef.current?.abort();
+      discoveryAbortControllerRef.current = null;
+      discoveryPromiseRef.current = null;
     };
   }, []);
 
@@ -75,6 +79,9 @@ export function useAppMapRuntime({
       forceRefresh?: boolean;
     }): Promise<AppMap | null> => {
       if (!appMapDiscoveryEnabled) {
+        discoveryAbortControllerRef.current?.abort();
+        discoveryAbortControllerRef.current = null;
+        discoveryPromiseRef.current = null;
         const fallbackAppMap = buildFallbackAppMapFromDom(domMapRef.current);
         if (isMountedRef.current) {
           setAndNotifyAppMap(fallbackAppMap);
@@ -100,14 +107,19 @@ export function useAppMapRuntime({
         setIsDiscovering(true);
       }
 
+      const abortController = new AbortController();
+      discoveryAbortControllerRef.current = abortController;
       discoveryPromiseRef.current = (async () => {
         try {
-          const discovered = await DOMScannerModule.discoverAppMap(domScannerPolicy);
+          const discovered = await DOMScannerModule.discoverAppMap(domScannerPolicy, abortController.signal);
           if (isMountedRef.current) {
             setAndNotifyAppMap(discovered);
           }
           return discovered;
         } catch {
+          if (abortController.signal.aborted) {
+            return null;
+          }
           if (isMountedRef.current && showOverlay) {
             setAndNotifyAppMap(null);
           }
@@ -116,7 +128,12 @@ export function useAppMapRuntime({
           if (isMountedRef.current && showOverlay) {
             setIsDiscovering(false);
           }
-          discoveryPromiseRef.current = null;
+          if (discoveryAbortControllerRef.current === abortController) {
+            discoveryAbortControllerRef.current = null;
+          }
+          if (discoveryPromiseRef.current) {
+            discoveryPromiseRef.current = null;
+          }
         }
       })();
 
