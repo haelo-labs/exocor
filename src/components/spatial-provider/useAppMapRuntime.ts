@@ -8,7 +8,7 @@ import {
   type DOMScannerPolicy
 } from '../../core/DOMScanner';
 import type { AppMap, DOMCapabilityMap } from '../../types';
-import { buildFallbackAppMapFromDom } from './shared';
+import { buildFallbackAppMapFromDom } from './appMapFallback';
 
 interface UseAppMapRuntimeOptions {
   appMapDiscoveryEnabled: boolean;

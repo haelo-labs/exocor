@@ -21,23 +21,21 @@ import type {
   ResolutionStatus
 } from '../../types';
 import type { StatusToastVariant } from '../StatusToast';
-import type { PendingClarificationState, VoiceGazeSnapshot } from './shared';
+import { buildFallbackAppMapFromDom } from './appMapFallback';
+import { stepToIntent } from './commandExecutionPresentation';
+import { APP_MAP_BOOTSTRAP_GRACE_MS, awaitWithAbort, isAbortError, normalizeCommand, sleep } from './commandRuntime';
 import {
-  APP_MAP_BOOTSTRAP_GRACE_MS,
-  awaitWithAbort,
   buildDirectToolPlan,
-  buildEnrichedContext,
-  buildFallbackAppMapFromDom,
   getPreferredToolEntries,
   getStrongPreferredTool,
-  isAbortError,
   isNavigateThenToolPlan,
-  normalizeCommand,
-  planUsesTool,
-  sanitizePlanStepsForUnrequestedPostSubmitNavigation,
-  sleep,
-  stepToIntent
-} from './shared';
+  planUsesTool
+} from './commandPlanning';
+import { buildEnrichedContext } from './resolverRuntimeContext';
+import type { PendingClarificationState, VoiceGazeSnapshot } from './runtimeState';
+import {
+  sanitizePlanStepsForUnrequestedPostSubmitNavigation
+} from './commandPlanning';
 import { createCommandExecutionFeedback } from './commandExecutionFeedback';
 import { recoverCommandExecution } from './commandExecutionRecovery';
 import { resolveCommandPlan } from './commandPlanResolution';

@@ -10,7 +10,7 @@ import type {
   ResolutionPriority,
   SequenceExecutionResult
 } from '../../types';
-import { sanitizePlanStepsForUnrequestedPostSubmitNavigation } from './shared';
+import { sanitizePlanStepsForUnrequestedPostSubmitNavigation } from './commandPlanning';
 
 type BuildRemoteResolutionPayload = (
   map: DOMCapabilityMap,

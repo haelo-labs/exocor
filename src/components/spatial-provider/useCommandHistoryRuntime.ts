@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { CommandHistoryItem } from '../ChatPanel';
 import type { CommandInputMethod } from '../../types';
-import type { PendingClarificationState } from './shared';
 import {
   getAllHistoryStorageKeys,
   getLegacyHistoryStorageKeys,
@@ -9,7 +8,8 @@ import {
   LEGACY_HISTORY_STORAGE_KEY,
   sanitizePersistedHistory,
   toHistoryInputMethod
-} from './shared';
+} from './commandHistoryStorage';
+import type { PendingClarificationState } from './runtimeState';
 
 interface UseCommandHistoryRuntimeOptions {
   initialRoutePath: string;

@@ -10,7 +10,7 @@ import type {
   SequenceExecutionResult
 } from '../../types';
 import type { ToolRegistry } from '../../core/ToolRegistry';
-import { formatProgress } from './shared';
+import { formatProgress } from './commandExecutionPresentation';
 
 interface CommandExecutionRuntimeOptions {
   historyEntryId: string;

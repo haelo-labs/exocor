@@ -18,7 +18,7 @@ import {
   createAsyncStepQueue,
   createStreamingStepSanitizer,
   sanitizePlanStepsForUnrequestedPostSubmitNavigation
-} from './shared';
+} from './commandPlanning';
 
 type DeterministicResolution = {
   plan: IntentPlan;

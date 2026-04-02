@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCommandExecutionFeedback } from '../components/spatial-provider/commandExecutionFeedback';
-import type { PendingClarificationState } from '../components/spatial-provider/shared';
+import type { PendingClarificationState } from '../components/spatial-provider/runtimeState';
 import type { ResolutionStatus } from '../types';
 
 function createStateRecorder<T>(initialValue: T) {

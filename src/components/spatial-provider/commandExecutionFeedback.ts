@@ -7,7 +7,7 @@ import type {
   ToolCapabilityEntry
 } from '../../types';
 import type { CommandHistoryItem } from '../ChatPanel';
-import type { PendingClarificationState } from './shared';
+import type { PendingClarificationState } from './runtimeState';
 
 interface CommandExecutionFeedbackOptions {
   historyEntryId: string;

@@ -40,17 +40,11 @@ import { SdkShadowHost } from './SdkShadowHost';
 import { StatusToast } from './StatusToast';
 import type { StatusIndicatorState } from './StatusIndicator';
 import { VoiceTranscriptBubble } from './VoiceTranscriptBubble';
+import { normalizeCommand } from './spatial-provider/commandRuntime';
 import { executeSpatialCommand } from './spatial-provider/executeSpatialCommand';
-import {
-  ACTIVE_MODALITIES_STORAGE_KEY,
-  DEFAULT_MODALITIES,
-  EMPTY_GAZE_STATE,
-  EMPTY_GESTURE_STATE,
-  emptyMap,
-  isTextEntryElement,
-  normalizeCommand,
-  type VoiceGazeSnapshot
-} from './spatial-provider/shared';
+import { isTextEntryElement } from './spatial-provider/hostDomUtils';
+import { ACTIVE_MODALITIES_STORAGE_KEY, DEFAULT_MODALITIES } from './spatial-provider/modalityPreferences';
+import { EMPTY_GAZE_STATE, EMPTY_GESTURE_STATE, emptyMap, type VoiceGazeSnapshot } from './spatial-provider/runtimeState';
 import { useAppMapRuntime } from './spatial-provider/useAppMapRuntime';
 import { useCommandHistoryRuntime } from './spatial-provider/useCommandHistoryRuntime';
 import { useModalityRuntime } from './spatial-provider/useModalityRuntime';
