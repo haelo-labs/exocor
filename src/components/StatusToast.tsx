@@ -57,7 +57,7 @@ export function StatusToast({
           border: `0.5px solid ${isFailed ? theme.toastFailedBorder : theme.toastBorder}`,
           background: isFailed ? theme.toastFailedSurface : theme.toastSurface,
           color: isFailed ? theme.toastFailedText : theme.toastText,
-          boxShadow: theme.entryPointShadow,
+          boxShadow: theme.launcherShadow,
           fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
           fontSize: 14,
           lineHeight: 'normal',

@@ -74,6 +74,7 @@ export const SDK_LIGHT_DOM_STYLES = `
     letter-spacing: -0.13px !important;
   }
 
+  [data-exocor-ui='true'] [data-exocor-text='clarification-prompt'],
   [data-exocor-ui='true'] [data-exocor-text='floating-clarification'] {
     font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
     font-size: 20px !important;
@@ -102,6 +103,8 @@ export const SDK_LIGHT_DOM_STYLES = `
     letter-spacing: 0.06px !important;
   }
 
+  [data-exocor-ui='true'] [data-exocor-text='discovery-overlay'],
+  [data-exocor-ui='true'] [data-exocor-text='discovery-overlay'] *,
   [data-exocor-ui='true'] [data-exocor-text='learning-overlay'],
   [data-exocor-ui='true'] [data-exocor-text='learning-overlay'] * {
     font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;

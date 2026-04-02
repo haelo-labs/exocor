@@ -22,7 +22,7 @@ export interface SdkTheme {
   panelNestedSurface: string;
   panelBorder: string;
   panelShadow: string;
-  entryPointShadow: string;
+  launcherShadow: string;
   textPrimary: string;
   textSecondary: string;
   textMuted: string;
@@ -90,7 +90,7 @@ const LIGHT_THEME: SdkTheme = {
   panelNestedSurface: '#f4f4f4',
   panelBorder: 'rgba(0, 0, 0, 0.1)',
   panelShadow: '-2px 4px 24px rgba(0, 0, 0, 0.35)',
-  entryPointShadow: '1px 2px 16px rgba(0, 0, 0, 0.18)',
+  launcherShadow: '1px 2px 16px rgba(0, 0, 0, 0.18)',
   textPrimary: '#161616',
   textSecondary: '#8d8d8d',
   textMuted: '#8d8d8d',
@@ -155,7 +155,7 @@ const DARK_THEME: SdkTheme = {
   panelNestedSurface: '#525252',
   panelBorder: 'rgba(255, 255, 255, 0.1)',
   panelShadow: '-2px 4px 24px rgba(0, 0, 0, 0.35)',
-  entryPointShadow: '1px 2px 16px rgba(0, 0, 0, 0.8)',
+  launcherShadow: '1px 2px 16px rgba(0, 0, 0, 0.8)',
   textPrimary: '#f4f4f4',
   textSecondary: '#c6c6c6',
   textMuted: '#c6c6c6',
