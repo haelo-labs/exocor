@@ -3,7 +3,7 @@ import { ActionExecutor } from '../../core/ActionExecutor';
 import { DOMScanner, readCachedAppMap, saveAppMapToCache, type DOMScannerPolicy } from '../../core/DOMScanner';
 import { DeterministicIntentResolver } from '../../core/DeterministicIntentResolver';
 import { RemoteIntentResolver } from '../../core/RemoteIntentResolver';
-import { shapeResolverNewElementsForTransport, type ResolverRequestKind, type ShapedResolverContext } from '../../core/ResolverContextShaper';
+import { type ResolverRequestKind, type ShapedResolverContext } from '../../core/ResolverContextShaper';
 import type { ResolvedExocorTrustPolicy } from '../../core/contextPolicy';
 import { normalizeToolRoutePath, type ToolRegistry } from '../../core/ToolRegistry';
 import type { CommandHistoryItem } from '../ChatPanel';
@@ -25,12 +25,9 @@ import type { PendingClarificationState, VoiceGazeSnapshot } from './shared';
 import {
   APP_MAP_BOOTSTRAP_GRACE_MS,
   awaitWithAbort,
-  buildAuthoritativePreferredToolPlan,
   buildDirectToolPlan,
   buildEnrichedContext,
   buildFallbackAppMapFromDom,
-  createAsyncStepQueue,
-  createStreamingStepSanitizer,
   getPreferredToolEntries,
   getStrongPreferredTool,
   isAbortError,
@@ -42,6 +39,8 @@ import {
   stepToIntent
 } from './shared';
 import { createCommandExecutionFeedback } from './commandExecutionFeedback';
+import { recoverCommandExecution } from './commandExecutionRecovery';
+import { resolveCommandPlan } from './commandPlanResolution';
 import { createCommandExecutionRuntime } from './commandExecutionRuntime';
 
 interface ExecuteSpatialCommandOptions {
@@ -317,196 +316,54 @@ export async function executeSpatialCommand({
     setDomMap(resolutionMap);
 
     let resolvedPlan: IntentPlan | null = null;
-    let resolutionPriority: ResolutionPriority = 'dom_only';
+    let resolutionPriority: ResolutionPriority = deterministicResolution ? deterministicResolution.resolutionPriority : 'dom_only';
     let latestIntentSource: IntentAction['source'] = deterministicResolution ? 'deterministic' : 'claude';
     let initialExecutionResult = null as Awaited<ReturnType<ActionExecutor['executeSequence']>> | null;
     let usedAuthoritativePreferredTool = false;
-    const handleClarificationRequest = (question: string, traceLabel: string): boolean => {
+    const handleClarificationRequest = (question: string, traceLabel: string): true => {
       return feedback.requestClarification(question, traceLabel);
     };
-    if (deterministicResolution) {
-      resolvedPlan = deterministicResolution.plan;
-      resolutionPriority = deterministicResolution.resolutionPriority;
-      if (toolShortcutMatch?.type === 'direct_execute') {
-        appendCommandHistoryTrace(historyEntryId, `Matched app-native tool shortcut: ${toolShortcutMatch.tool.id}`);
-      } else {
-        appendCommandHistoryTrace(
-          historyEntryId,
-          `Matched deterministic instant action (${resolvedPlan.steps.length} step${resolvedPlan.steps.length === 1 ? '' : 's'})`
-        );
-      }
-    }
-    if (!resolvedPlan && strongPreferredTool) {
-      if (!strongPreferredTool.parameters.length) {
-        resolvedPlan = buildAuthoritativePreferredToolPlan(resolutionCommand, strongPreferredTool, {});
-        resolutionPriority = 'app_map_only';
-        latestIntentSource = 'deterministic';
-        usedAuthoritativePreferredTool = true;
-        if (strongPreferredTool.currentRouteMatches || strongPreferredTool.isGlobal) {
-          appendCommandHistoryTrace(
-            historyEntryId,
-            `Using authoritative preferred tool directly: ${strongPreferredTool.id}`
-          );
-        } else {
-          appendCommandHistoryTrace(
-            historyEntryId,
-            `Using authoritative navigate -> tool path: ${strongPreferredTool.id}`
-          );
-        }
-      } else if (remoteResolverAvailable && resolverRef.current) {
-        appendCommandHistoryTrace(historyEntryId, `Resolving arguments for preferred tool: ${strongPreferredTool.id}`);
-        const shapedPreferredToolPayload = buildRemoteResolutionPayload(
-          resolutionMap,
-          resolutionCommand,
-          undefined,
-          enrichedContext,
-          'preferred_tool_intent'
-        );
-        const preferredToolIntent = await resolverRef.current.resolvePreferredToolIntent(
-          shapedPreferredToolPayload.input,
-          strongPreferredTool.id,
-          strongPreferredTool.preferredReason || 'strong semantic match',
-          signal
-        );
+    const planResolution = await resolveCommandPlan({
+      historyEntryId,
+      baseCommand,
+      inputMethod,
+      resolutionCommand,
+      resolutionCommandForContext,
+      resolutionMap,
+      availableAppMap,
+      toolShortcutMatch,
+      strongPreferredTool,
+      deterministicResolution,
+      remoteResolverAvailable,
+      shouldAwaitMountDiscoveryBeforeExecution,
+      enrichedContext,
+      signal,
+      resolver: resolverRef.current,
+      toolRegistry,
+      appendCommandHistoryTrace,
+      updateCommandHistoryEntry,
+      buildRemoteResolutionPayload,
+      streamExecutionRuntime: {
+        refreshMapForExecution,
+        executeStreamedSequence
+      },
+      requestClarification: handleClarificationRequest
+    });
 
-        if (preferredToolIntent.status === 'clarification') {
-          return handleClarificationRequest(
-            preferredToolIntent.question,
-            `Preferred tool requires clarification: ${strongPreferredTool.id}`
-          );
-        }
-
-        if (preferredToolIntent.status === 'ready') {
-          const validation = toolRegistry.validateArgs(strongPreferredTool.id, preferredToolIntent.args);
-          if (validation.ok) {
-            resolvedPlan = buildAuthoritativePreferredToolPlan(resolutionCommand, strongPreferredTool, validation.args);
-            resolutionPriority = 'app_map_only';
-            latestIntentSource = 'deterministic';
-            usedAuthoritativePreferredTool = true;
-            if (strongPreferredTool.currentRouteMatches || strongPreferredTool.isGlobal) {
-              appendCommandHistoryTrace(
-                historyEntryId,
-                `Using authoritative preferred tool directly: ${strongPreferredTool.id}`
-              );
-            } else {
-              appendCommandHistoryTrace(
-                historyEntryId,
-                `Using authoritative navigate -> tool path: ${strongPreferredTool.id}`
-              );
-            }
-          } else {
-            appendCommandHistoryTrace(
-              historyEntryId,
-              `Preferred tool arguments failed validation; using normal planner behavior: ${validation.reason}`
-            );
-          }
-        } else {
-          appendCommandHistoryTrace(
-            historyEntryId,
-            `Preferred tool could not cover the full intent authoritatively; using normal planner behavior: ${preferredToolIntent.reason}`
-          );
-        }
-      } else {
-        appendCommandHistoryTrace(
-          historyEntryId,
-          `Preferred tool requires remote argument planning, but remote resolver is disabled: ${strongPreferredTool.id}`
-        );
-      }
+    if (planResolution.status === 'clarification_requested') {
+      return true;
     }
 
-    if (!resolvedPlan && remoteResolverAvailable && resolverRef.current) {
-      const useStreamExecution = inputMethod !== 'voice' && !shouldAwaitMountDiscoveryBeforeExecution;
-      const streamSanitizer = createStreamingStepSanitizer(baseCommand);
-      const streamedSteps: IntentStep[] = [];
-      const streamQueueRef: { current: ReturnType<typeof createAsyncStepQueue> | null } = { current: null };
-      const streamExecutionRef: {
-        current: Promise<Awaited<ReturnType<ActionExecutor['executeSequence']>>> | null;
-      } = { current: null };
-      let didStartStreamExecution = false;
-
-      const beginStreamingExecution = (): void => {
-        if (!streamQueueRef.current || streamExecutionRef.current) {
-          return;
-        }
-        if (!didStartStreamExecution) {
-          didStartStreamExecution = true;
-          updateCommandHistoryEntry(historyEntryId, 'executing');
-          appendCommandHistoryTrace(historyEntryId, 'Streaming plan and executing steps...');
-        }
-
-        const executionMap = resolutionPriority === 'dom_only' ? refreshMapForExecution() : resolutionMap;
-        streamExecutionRef.current = executeStreamedSequence(streamQueueRef.current.iterable, executionMap, {
-          appMap: availableAppMap,
-          resolutionPriority
-        });
-      };
-
-      const pushStreamedStep = (step: IntentStep): void => {
-        const sanitizedStep = streamSanitizer(step);
-        if (!sanitizedStep) {
-          return;
-        }
-        streamedSteps.push(sanitizedStep);
-        if (!streamQueueRef.current) {
-          streamQueueRef.current = createAsyncStepQueue();
-        }
-        streamQueueRef.current.push(sanitizedStep);
-        beginStreamingExecution();
-      };
-
-      const streamResolutionPayload = buildRemoteResolutionPayload(
-        resolutionMap,
-        resolutionCommandForContext,
-        undefined,
-        enrichedContext,
-        'plan'
-      );
-      let resolvedIntent;
-      try {
-        resolvedIntent = await resolverRef.current.resolveWithContextStreamInternal(
-          streamResolutionPayload.input,
-          streamResolutionPayload.runtimeContext,
-          {
-            onResolutionPriority: (priority) => {
-              resolutionPriority = priority;
-            },
-            ...(useStreamExecution ? { onStep: pushStreamedStep } : {})
-          },
-          signal
-        );
-      } finally {
-        streamQueueRef.current?.close();
-      }
-
-      if (resolvedIntent?.type === 'text_response') {
-        if (streamExecutionRef.current) {
-          try {
-            await streamExecutionRef.current;
-          } catch {
-            // Ignore stream-execution teardown errors in text-response mode.
-          }
-        }
-
-        return handleClarificationRequest(resolvedIntent.text, 'Returned text response');
-      } else if (resolvedIntent?.type === 'dom_steps') {
-        const sanitizedResolvedSteps = sanitizePlanStepsForUnrequestedPostSubmitNavigation(
-          resolvedIntent.plan.steps,
-          baseCommand
-        );
-        const resolvedSteps = useStreamExecution && streamedSteps.length > 0 ? streamedSteps : sanitizedResolvedSteps;
-        appendCommandHistoryTrace(
-          historyEntryId,
-          `Planned ${resolvedSteps.length} step${resolvedSteps.length === 1 ? '' : 's'}`
-        );
-        resolutionPriority = resolvedIntent.resolutionPriority;
-        resolvedPlan = {
-          ...resolvedIntent.plan,
-          steps: resolvedSteps
-        };
-        if (useStreamExecution && streamExecutionRef.current && streamedSteps.length > 0) {
-          initialExecutionResult = await streamExecutionRef.current;
-        }
-      }
+    if (planResolution.status === 'planned') {
+      resolvedPlan = planResolution.plan;
+      resolutionPriority = planResolution.resolutionPriority;
+      latestIntentSource = planResolution.latestIntentSource;
+      initialExecutionResult = planResolution.initialExecutionResult;
+      usedAuthoritativePreferredTool = planResolution.usedAuthoritativePreferredTool;
+    } else {
+      resolutionPriority = planResolution.resolutionPriority;
+      latestIntentSource = planResolution.latestIntentSource;
+      usedAuthoritativePreferredTool = planResolution.usedAuthoritativePreferredTool;
     }
 
     if (!resolvedPlan && !remoteResolverAvailable) {
@@ -554,7 +411,6 @@ export async function executeSpatialCommand({
 
     const allowDynamicReplan = resolutionPriority !== 'app_map_only';
     const completedStepsHistory: IntentStep[] = [];
-    let didAttemptScopedAppMapRefresh = false;
     let result = initialExecutionResult;
     if (!result) {
       if (shouldAwaitMountDiscoveryBeforeExecution && mountDiscoveryPromise) {
@@ -586,131 +442,35 @@ export async function executeSpatialCommand({
       };
     }
 
-    const shouldAttemptScopedAppMapRefresh =
-      !result.executed &&
-      !didAttemptScopedAppMapRefresh &&
-      Boolean(availableAppMap) &&
-      resolutionPriority !== 'dom_only' &&
-      result.failedStep &&
-      result.failedStepReason?.toLowerCase().includes('target not found');
-
-    if (shouldAttemptScopedAppMapRefresh) {
-      didAttemptScopedAppMapRefresh = true;
-      setProgressMessage('Refreshing cached app map...');
-      showToast('planning', 'Refreshing cached app map...');
-      appendCommandHistoryTrace(historyEntryId, 'Refreshing cached app map after target lookup failed');
-
-      const refreshedAppMap = await awaitWithAbort(
-        runAppMapDiscovery({
-          showOverlay: false,
-          reason: 'stale_target_not_found',
-          forceRefresh: true
-        }),
-        signal
-      );
-
-      if (refreshedAppMap) {
-        availableAppMap = refreshedAppMap;
-      }
-
-      const remainingSteps = resolvedPlan.steps.slice(result.completedSteps);
-      if (remainingSteps.length) {
-        const refreshedExecutionMap = refreshMapForExecution();
-        result = await executeSequence(remainingSteps, refreshedExecutionMap, {
-          appMap: availableAppMap,
-          resolutionPriority
-        });
-        completedStepsHistory.push(...remainingSteps.slice(0, result.completedSteps));
-      }
-    }
-
-    const failureReasonLower = result.failedStepReason?.toLowerCase() || '';
-    const shouldRetryFailedStepWithPlanner =
-      !result.executed &&
-      Boolean(result.failedStep) &&
-      Boolean(resolverRef.current) &&
-      (failureReasonLower.includes('target not found') ||
-        (result.failedStep?.action === 'tool' && failureReasonLower.includes('current route')));
-
-    if (shouldRetryFailedStepWithPlanner && result.failedStep && remoteResolverAvailable && resolverRef.current) {
-      setProgressMessage('Retrying failed step with updated context...');
-      showToast('planning', 'Retrying failed step with updated context...');
-      appendCommandHistoryTrace(historyEntryId, 'Retrying failed step with updated context');
-      const retryMap = refreshMapForExecution();
-      const retryResolutionPayload = buildRemoteResolutionPayload(
-        retryMap,
-        resolutionCommand,
-        undefined,
-        enrichedContext,
-        'failed_step'
-      );
-
-      const retrySteps = await resolverRef.current.resolveForFailedStep(
-        retryResolutionPayload.input,
-        result.failedStep,
-        result.failedStepReason || result.reason || 'Execution failed',
-        signal
-      );
-
-      const sanitizedRetrySteps = sanitizePlanStepsForUnrequestedPostSubmitNavigation(retrySteps, baseCommand);
-
-      if (sanitizedRetrySteps.length) {
-        latestIntentSource = 'claude';
-        result = await executeSequence(sanitizedRetrySteps, retryMap, {
-          appMap: availableAppMap,
-          resolutionPriority
-        });
-        completedStepsHistory.push(...sanitizedRetrySteps.slice(0, result.completedSteps));
-      }
-    }
-
-    if (
-      !result.executed &&
-      allowDynamicReplan &&
-      Boolean(result.newElementsAfterWait?.length) &&
-      remoteResolverAvailable &&
-      resolverRef.current
-    ) {
-      setProgressMessage('Planning dynamic follow-up steps...');
-      showToast('planning', 'Planning dynamic follow-up steps...');
-      appendCommandHistoryTrace(historyEntryId, 'Planning dynamic follow-up steps');
-
-      const followUpMap = refreshMapForExecution();
-      const followUpResolutionPayload = buildRemoteResolutionPayload(
-        followUpMap,
-        resolutionCommand,
-        completedStepsHistory,
-        enrichedContext,
-        'new_elements'
-      );
-      const shapedNewElements = shapeResolverNewElementsForTransport({
-        command: resolutionCommand,
-        elements: result.newElementsAfterWait || [],
-        gazeTarget: commandGazeState.gazeTarget ?? null,
-        trustPolicy: resolvedTrustPolicy
-      });
-
-      const followUpSteps = await resolverRef.current.resolveForNewElements(
-        followUpResolutionPayload.input,
-        shapedNewElements,
-        completedStepsHistory,
-        signal
-      );
-
-      const sanitizedFollowUpSteps = sanitizePlanStepsForUnrequestedPostSubmitNavigation(
-        followUpSteps,
-        baseCommand
-      );
-
-      if (sanitizedFollowUpSteps.length) {
-        latestIntentSource = 'claude';
-        result = await executeSequence(sanitizedFollowUpSteps, followUpMap, {
-          appMap: availableAppMap,
-          resolutionPriority
-        });
-        completedStepsHistory.push(...sanitizedFollowUpSteps.slice(0, result.completedSteps));
-      }
-    }
+    const recoveryResult = await recoverCommandExecution({
+      historyEntryId,
+      baseCommand,
+      resolutionCommand,
+      commandGazeState,
+      result,
+      plannedSteps: resolvedPlan.steps,
+      completedStepsHistory,
+      latestIntentSource,
+      availableAppMap,
+      resolutionPriority,
+      allowDynamicReplan,
+      resolvedTrustPolicy,
+      remoteResolverAvailable,
+      enrichedContext,
+      signal,
+      resolver: resolverRef.current,
+      runAppMapDiscovery: (options) => awaitWithAbort(runAppMapDiscovery(options), signal),
+      refreshMapForExecution,
+      executeSequence,
+      setProgressMessage,
+      showToast,
+      appendCommandHistoryTrace,
+      buildRemoteResolutionPayload
+    });
+    result = recoveryResult.result;
+    availableAppMap = recoveryResult.availableAppMap;
+    latestIntentSource = recoveryResult.latestIntentSource;
+    completedStepsHistory.splice(0, completedStepsHistory.length, ...recoveryResult.completedStepsHistory);
 
     const latestStep = completedStepsHistory.at(-1);
     const latestIntent = latestStep ? stepToIntent(latestStep, latestIntentSource, resolutionCommand) : null;
